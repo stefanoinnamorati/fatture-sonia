@@ -1,0 +1,15 @@
+{
+  "name": "Fatture Sonia",
+  "short_name": "Fatture",
+  "description": "Pazienti, agenda e fatture dello studio di Sonia Zaffarano",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3efe6",
+  "theme_color": "#0f5f57",
+  "lang": "it",
+  "icons": [
+    { "src": "assets/icon-180.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

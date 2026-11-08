@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#0f5f57">
+  <title>Fatture Sonia</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/logo.png" type="image/png">
+  <link rel="apple-touch-icon" href="assets/icon-180.png">
+  <link rel="stylesheet" href="styles.css?v=3">
+</head>
+<body>
+  <div id="app"></div>
+  <nav id="tabbar">
+    <a href="#/" data-tab="oggi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 4l8 7.5"/><path d="M7 10.5V20h10v-9.5"/></svg>Oggi</a>
+    <a href="#/pazienti" data-tab="pazienti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.6-3 2.7-4.5 5.5-4.5S14.4 16 15 19"/><circle cx="17" cy="9" r="2.2"/><path d="M16.2 14.6c2.2.3 3.6 1.6 4.3 4.4"/></svg>Pazienti</a>
+    <a href="#/fatture" data-tab="fatture"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3.5h8l4 4V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z"/><path d="M15 3.5V8h4"/><path d="M9 12h6M9 16h4"/></svg>Fatture</a>
+    <a href="#/agenda" data-tab="agenda"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3.5V7M16 3.5V7M4 10h16"/></svg>Agenda</a>
+    <a href="#/altro" data-tab="altro"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="18" cy="12" r="1.2" fill="currentColor"/></svg>Altro</a>
+  </nav>
+  <div id="toast" hidden></div>
+  <script src="vendor/jspdf.umd.min.js?v=3"></script>
+  <script src="js/money.js?v=3"></script>
+  <script src="js/seed.js?v=5"></script>
+  <script src="js/seed.local.js?v=5"></script>
+  <script src="js/db.js?v=3"></script>
+  <script src="js/xlsx.js?v=3"></script>
+  <script src="js/pdf.js?v=3"></script>
+  <script src="js/app.js?v=5"></script>
+</body>
+</html>
