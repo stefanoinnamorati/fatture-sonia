@@ -44,21 +44,13 @@
     return "Contributo integrativo ENPAP del 2% a carico del cliente (rivalsa)." + n;
   }
 
-  async function invoicePdf(inv, patient, settings) {
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: "mm", format: "a4" });
+  function drawInvoice(doc, inv, patient, settings, logo, page, pages) {
     const pageW = 210;
     const left = 16;
     const right = pageW - 16;
-    const logo = await loadLogo();
-    doc.setProperties({
-      title: "Fattura " + inv.number + "/" + inv.year,
-      author: (settings.titolo ? settings.titolo + " " : "") + settings.nome,
-      subject: "Fattura per prestazione sanitaria",
-    });
 
     if (logo) {
-      doc.addImage(logo, "PNG", left, 12, 26, 26);
+      doc.addImage(logo, "PNG", left, 12, 26, 26, "logo");
     }
 
     const textX = logo ? left + 30 : left;
@@ -219,8 +211,37 @@
 
     doc.setFontSize(7);
     doc.setTextColor(140, 132, 122);
-    doc.text("Pagina 1 di 1", right, 290, { align: "right" });
+    doc.text("Pagina " + page + " di " + pages, right, 290, { align: "right" });
+  }
 
+  async function invoicePdf(inv, patient, settings) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const logo = await loadLogo();
+    doc.setProperties({
+      title: "Fattura " + inv.number + "/" + inv.year,
+      author: (settings.titolo ? settings.titolo + " " : "") + settings.nome,
+      subject: "Fattura per prestazione sanitaria",
+    });
+    drawInvoice(doc, inv, patient, settings, logo, 1, 1);
+    return doc.output("blob");
+  }
+
+  async function invoicesPdf(meta) {
+    const { jsPDF } = window.jspdf;
+    const settings = meta.settings;
+    const list = meta.invoices || [];
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const logo = await loadLogo();
+    doc.setProperties({
+      title: "Fatture " + (meta.period || ""),
+      author: (settings.titolo ? settings.titolo + " " : "") + (settings.nome || ""),
+      subject: "Fatture del periodo per il commercialista",
+    });
+    list.forEach(function (inv, i) {
+      if (i > 0) doc.addPage();
+      drawInvoice(doc, inv, meta.patientOf(inv), settings, logo, i + 1, list.length);
+    });
     return doc.output("blob");
   }
 
@@ -371,5 +392,5 @@
     return doc.output("blob");
   }
 
-  window.Pdf = { invoicePdf: invoicePdf, summaryPdf: summaryPdf };
+  window.Pdf = { invoicePdf: invoicePdf, summaryPdf: summaryPdf, invoicesPdf: invoicesPdf };
 })();

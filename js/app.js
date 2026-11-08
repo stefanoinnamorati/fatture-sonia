@@ -23,6 +23,7 @@
     exportTo: new Date().getFullYear() + "-12-31",
     attachExcel: true,
     attachPdf: true,
+    attachInvoices: true,
   };
 
   let draft = null;
@@ -559,12 +560,13 @@
       '<div class="field" style="margin-top:12px"><label for="ex-mail">Email del commercialista</label><input id="ex-mail" type="email" value="' + esc(S.settings.emailCommercialista || "") + '" placeholder="nome@studio.it"></div>' +
       '<label class="check"><input id="ex-xlsx" type="checkbox"' + (S.attachExcel ? " checked" : "") + "> Allega Excel</label>" +
       '<label class="check"><input id="ex-pdf" type="checkbox"' + (S.attachPdf ? " checked" : "") + "> Allega PDF di riepilogo</label>" +
+      '<label class="check"><input id="ex-invoices" type="checkbox"' + (S.attachInvoices ? " checked" : "") + "> Allega PDF con tutte le fatture</label>" +
       '<div class="stack"><button class="btn" type="button" data-action="send-summary">Invia per email</button>' +
       '<button class="btn secondary" type="button" data-action="make-excel">Scarica Excel</button>' +
       '<button class="btn secondary" type="button" data-action="make-pdf-summary">Scarica PDF</button></div>' +
       '<div class="section-title"><h2>Nel periodo</h2></div>' +
       (list.length ? '<div class="list">' + list.map(invoiceRow).join("") + "</div>" : '<div class="empty">Nessuna fattura in queste date.</div>') +
-      '<p class="muted">Il riepilogo ha le stesse colonne del foglio, più il codice fiscale del paziente.</p>';
+      '<p class="muted">Il riepilogo ha le stesse colonne del foglio, più il codice fiscale del paziente. Il PDF delle fatture mette una fattura per pagina.</p>';
   }
 
   function viewAltro() {
@@ -669,6 +671,7 @@
     S.exportTo = document.getElementById("ex-to").value || S.exportTo;
     S.attachExcel = document.getElementById("ex-xlsx").checked;
     S.attachPdf = document.getElementById("ex-pdf").checked;
+    S.attachInvoices = document.getElementById("ex-invoices").checked;
     S.settings.emailCommercialista = document.getElementById("ex-mail").value.trim();
   }
 
@@ -1032,6 +1035,9 @@
     if (kind === "pdf" || kind === "send" && S.attachPdf) {
       files.push({ name: baseName() + ".pdf", blob: await Pdf.summaryPdf(meta) });
     }
+    if (kind === "pdf" || kind === "send" && S.attachInvoices) {
+      files.push({ name: baseName() + "_fatture.pdf", blob: await Pdf.invoicesPdf(meta) });
+    }
     if (!files.length) {
       toast("Scegli Excel, PDF o entrambi.");
       return null;
@@ -1073,7 +1079,7 @@
       importBackup(e.target.files[0]).catch(function () { toast("Importazione non riuscita."); });
       e.target.value = "";
     }
-    if (e.target.id === "ex-from" || e.target.id === "ex-to" || e.target.id === "ex-xlsx" || e.target.id === "ex-pdf" || e.target.id === "ex-mail") {
+    if (e.target.id === "ex-from" || e.target.id === "ex-to" || e.target.id === "ex-xlsx" || e.target.id === "ex-pdf" || e.target.id === "ex-invoices" || e.target.id === "ex-mail") {
       readExportInputs();
       if (e.target.id === "ex-from" || e.target.id === "ex-to") render();
     }
