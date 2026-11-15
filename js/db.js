@@ -1,7 +1,13 @@
 (function () {
   const DB_NAME = "fatture-sonia";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   let dbp = null;
+  let quiet = 0;
+
+  function touch() {
+    if (quiet) return;
+    if (window.Sync && Sync.noteLocalChange) Sync.noteLocalChange();
+  }
 
   function open() {
     if (dbp) return dbp;
@@ -9,7 +15,7 @@
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = function () {
         const db = req.result;
-        ["patients", "invoices", "appointments", "meta"].forEach(function (name) {
+        ["patients", "invoices", "appointments", "meta", "files"].forEach(function (name) {
           if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: "id" });
         });
       };
@@ -32,6 +38,7 @@
     const tx = db.transaction(store, "readwrite");
     tx.objectStore(store).put(value);
     await txDone(tx);
+    touch();
   }
 
   async function get(store, id) {
@@ -59,6 +66,7 @@
     const tx = db.transaction(store, "readwrite");
     tx.objectStore(store).delete(id);
     await txDone(tx);
+    touch();
   }
 
   async function clear(store) {
@@ -66,6 +74,7 @@
     const tx = db.transaction(store, "readwrite");
     tx.objectStore(store).clear();
     await txDone(tx);
+    touch();
   }
 
   async function getMeta(id) {
@@ -78,14 +87,27 @@
   }
 
   async function importAll(seed) {
-    await clear("patients");
-    await clear("invoices");
-    await clear("appointments");
-    for (const p of seed.patients) await put("patients", p);
-    for (const i of seed.invoices) await put("invoices", i);
-    for (const a of seed.appointments) await put("appointments", a);
-    await setMeta("settings", seed.professional);
-    await setMeta("seeded", true);
+    await runQuiet(async function () {
+      await clear("patients");
+      await clear("invoices");
+      await clear("appointments");
+      await clear("files");
+      for (const p of seed.patients) await put("patients", p);
+      for (const i of seed.invoices) await put("invoices", i);
+      for (const a of seed.appointments) await put("appointments", a);
+      if (seed.files) {
+        for (const f of seed.files) await put("files", f);
+      }
+      await setMeta("settings", seed.professional);
+      await setMeta("seeded", true);
+    });
+    touch();
+  }
+
+  async function runQuiet(fn) {
+    quiet++;
+    try { return await fn(); }
+    finally { quiet--; }
   }
 
   window.DB = {
@@ -94,8 +116,10 @@
     get: get,
     all: all,
     del: del,
+    clear: clear,
     getMeta: getMeta,
     setMeta: setMeta,
     importAll: importAll,
+    runQuiet: runQuiet,
   };
 })();

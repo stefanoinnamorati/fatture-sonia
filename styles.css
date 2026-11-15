@@ -193,6 +193,14 @@ h2 {
   border-radius: 14px; padding: 10px 12px; font-size: 14px; margin-bottom: 12px;
 }
 .note-box { background: #e7f2f0; color: var(--teal-d); }
+.scan {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 12px;
+  background: white;
+  margin: 4px 0 12px;
+}
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;

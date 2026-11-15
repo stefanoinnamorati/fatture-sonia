@@ -12,6 +12,7 @@
   const S = {
     patients: [],
     invoices: [],
+    files: [],
     appointments: [],
     settings: null,
     path: "",
@@ -215,10 +216,33 @@
   }
 
   async function reload() {
+    if (reload.urls) {
+      Object.keys(reload.urls).forEach(function (key) { URL.revokeObjectURL(reload.urls[key]); });
+    }
+    reload.urls = {};
     S.patients = await DB.all("patients");
     S.invoices = await DB.all("invoices");
+    S.files = await DB.all("files");
     S.appointments = await DB.all("appointments");
     S.settings = (await DB.getMeta("settings")) || Object.assign({}, window.activeSeed().professional);
+  }
+
+  function fileById(id) {
+    return S.files.find(function (file) { return file.id === id; });
+  }
+
+  function fileUrl(file) {
+    if (!file || !file.blob) return "";
+    if (!reload.urls[file.id]) reload.urls[file.id] = URL.createObjectURL(file.blob);
+    return reload.urls[file.id];
+  }
+
+  function bolloDue(inv) {
+    return !!(inv && isFiscal(inv) && (inv.bollo || 0) > 0);
+  }
+
+  function bolloArchived(inv) {
+    return !!(inv && inv.bolloProva && inv.bolloProva.fileId && fileById(inv.bolloProva.fileId));
   }
 
   function locked() {
@@ -313,6 +337,10 @@
       '<a class="btn secondary" href="#/fatture/nuova?tipo=proforma">Nuova pro forma</a>' +
       '<a class="btn secondary" href="#/agenda/nuovo">Nuovo appuntamento</a></div>' +
       (openPf.length ? '<div class="note-box">' + openPf.length + ' pro forma ' + (openPf.length === 1 ? "aperta" : "aperte") + '. <a href="#/fatture?tipo=proforma">Apri l\'elenco</a></div>' : "") +
+      (function () {
+        const due = S.invoices.filter(function (i) { return bolloDue(i) && !bolloArchived(i); }).length;
+        return due ? '<div class="warn-box">' + due + (due === 1 ? " fattura ha" : " fatture hanno") + ' la marca da bollo ancora da archiviare. Apri la fattura e aggiungi la scansione.</div>' : "";
+      })() +
       '<div class="section-title"><h2>Prossimi appuntamenti</h2><a href="#/agenda">Agenda</a></div>' +
       (upcoming.length ? '<div class="list">' + upcoming.map(appointmentRow).join("") + "</div>" : '<div class="empty">Nessun appuntamento in programma.</div>') +
       '<div class="section-title"><h2>Ultime fatture</h2><a href="#/fatture">Tutte</a></div>' +
@@ -327,7 +355,8 @@
       : '<span class="badge ' + (paid ? "ok" : "wait") + '">' + (paid ? "Incassata" : "Da incassare") + "</span>";
     return '<a class="row" href="#/fatture/' + esc(inv.id) + '"><div class="avatar' + (proforma ? " pf" : "") + '">' + (proforma ? "PF" : inv.number) + "</div><div class=\"main\">" +
       '<div class="name">' + esc(inv.patientName) + "</div>" +
-      '<div class="meta">' + (proforma ? "Pro forma n. " : "n. ") + inv.number + "/" + inv.year + " · " + esc(Money.formatDateIT(inv.date)) + " · " + esc(inv.paymentMethod || "—") + "</div></div>" +
+      '<div class="meta">' + (proforma ? "Pro forma n. " : "n. ") + inv.number + "/" + inv.year + " · " + esc(Money.formatDateIT(inv.date)) + " · " + esc(inv.paymentMethod || "—") +
+      (bolloDue(inv) ? (bolloArchived(inv) ? " · bollo archiviato" : " · bollo da archiviare") : "") + "</div></div>" +
       '<div style="text-align:right"><div class="amount">' + esc(Money.formatEuro(inv.totale)) + "</div>" +
       badge + "</div></a>";
   }
@@ -485,12 +514,59 @@
       (inv.notes ? "<p>" + esc(inv.notes) + "</p>" : "") +
       (p ? '<p><a href="#/pazienti/' + esc(p.id) + '">Apri scheda paziente</a></p>' : "") +
       "</div>" +
+      bolloCard(inv) +
       '<div class="stack" style="margin-top:12px">' +
       (proforma && !converted ? '<a class="btn" href="#/fatture/' + esc(inv.id) + '/converti">Converti in fattura</a>' : "") +
       '<button class="btn' + (proforma && !converted ? " secondary" : "") + '" type="button" data-action="share-invoice" data-id="' + esc(inv.id) + '">Invia PDF</button>' +
       '<button class="btn secondary" type="button" data-action="pdf-invoice" data-id="' + esc(inv.id) + '">Scarica PDF</button>' +
       '<a class="btn secondary" href="#/fatture/' + esc(inv.id) + '/modifica">Modifica</a>' +
       '<button class="btn ghost" type="button" data-action="delete-invoice" data-id="' + esc(inv.id) + '">Elimina</button></div>';
+  }
+
+  function bolloCard(inv) {
+    if (!bolloDue(inv)) return "";
+    const prova = inv.bolloProva || {};
+    const modo = prova.modo || (S.settings.bolloMode === "virtuale" ? "elettronica" : "cartacea");
+    const file = prova.fileId ? fileById(prova.fileId) : null;
+    const url = fileUrl(file);
+    const preview = !file ? "" : (file.type === "application/pdf"
+      ? '<a class="btn secondary" href="' + url + '" target="_blank" rel="noopener">Apri il PDF archiviato</a>'
+      : '<img class="scan" src="' + url + '" alt="Scansione della marca da bollo">');
+    return '<div class="card" style="margin-top:12px"><div class="label">Marca da bollo</div>' +
+      '<p class="muted">Archivia la scansione del foglio stampato con la marca cartacea, oppure il PDF se l\'imposta è assolta in modo elettronico.</p>' +
+      '<div class="seg"><button type="button" class="' + (modo === "cartacea" ? "on" : "") + '" data-action="bollo-modo" data-id="' + esc(inv.id) + '" data-modo="cartacea">Cartacea</button>' +
+      '<button type="button" class="' + (modo === "elettronica" ? "on" : "") + '" data-action="bollo-modo" data-id="' + esc(inv.id) + '" data-modo="elettronica">Elettronica</button></div>' +
+      '<div class="field"><label for="bollo-data">Data di assolvimento</label><input id="bollo-data" data-id="' + esc(inv.id) + '" type="date" value="' + esc(prova.data || "") + '"></div>' +
+      preview +
+      '<label class="btn secondary">' + (file ? "Sostituisci la scansione" : "Scatta o scegli la scansione") +
+      '<input class="bollo-file" data-id="' + esc(inv.id) + '" type="file" accept="image/*,application/pdf" hidden></label>' +
+      (file ? '<button class="btn ghost" type="button" data-action="bollo-remove" data-id="' + esc(inv.id) + '">Rimuovi scansione</button>' : "") +
+      "</div>";
+  }
+
+  function icloudCard() {
+    const st = window.Sync ? Sync.state : {};
+    const when = st.updatedAt ? st.updatedAt.replace("T", " ").slice(0, 16) : "";
+    let status = "Nessuna cartella collegata.";
+    if (st.linked && st.needsAuth) status = "Cartella «" + (st.folderName || "iCloud") + "» da autorizzare di nuovo.";
+    else if (st.linked) status = "Cartella collegata: " + (st.folderName || "iCloud") + ".";
+    else if (!st.canPick) status = "Su questo Safari la cartella non resta aperta da sola. Pubblica e aggiorna il file in iCloud Drive.";
+    return '<div class="card" style="margin-bottom:12px"><h2>Cartella iCloud</h2>' +
+      '<p class="muted">Pazienti, fatture e scansioni del bollo stanno nel file <strong>archivio-fatture-sonia.json</strong>. Scegli una cartella dentro iCloud Drive, per esempio «Fatture Sonia»: iCloud la copia sui dispositivi con lo stesso Apple ID.</p>' +
+      '<p class="muted">Su iPhone e iPad, Safari non può scrivere da solo in quella cartella. Dopo una modifica tocca <strong>Pubblica su iCloud</strong> e sostituisci il file. Per ricevere le modifiche tocca <strong>Aggiorna da iCloud</strong>. Se apri il sito con Chrome o Edge sul Mac, la cartella resta collegata e si aggiorna da sola.</p>' +
+      '<p>' + esc(status) + (when ? " Ultima modifica " + esc(when) + "." : "") + "</p>" +
+      (st.lastError ? '<div class="warn-box">' + esc(st.lastError) + "</div>" : "") +
+      (st.conflict ? '<div class="warn-box">Questo dispositivo e iCloud hanno modifiche diverse. Scegli quale copia tenere.</div>' +
+        '<div class="stack"><button class="btn" type="button" data-action="sync-keep-remote">Tieni la copia iCloud</button>' +
+        '<button class="btn secondary" type="button" data-action="sync-keep-local">Tieni questo dispositivo</button></div>' : "") +
+      '<div class="stack">' +
+      (st.canPick && !st.linked ? '<button class="btn" type="button" data-action="sync-choose">Scegli cartella iCloud</button>' : "") +
+      (st.canPick && st.linked && st.needsAuth ? '<button class="btn" type="button" data-action="sync-auth">Autorizza la cartella</button>' : "") +
+      (st.canPick && st.linked ? '<button class="btn secondary" type="button" data-action="sync-now">Aggiorna ora</button>' : "") +
+      '<button class="btn' + (st.canPick && !st.linked ? " secondary" : "") + '" type="button" data-action="export-backup">Pubblica su iCloud</button>' +
+      '<label class="btn secondary">Aggiorna da iCloud<input class="import-file" type="file" accept="application/json,.json" hidden></label>' +
+      (st.linked ? '<button class="btn ghost" type="button" data-action="sync-disconnect">Scollega cartella</button>' : "") +
+      "</div></div>";
   }
 
   function ensureDraft(existing, q) {
@@ -756,10 +832,7 @@
 
   function viewAltro() {
     return brandBlock("Studio") +
-      '<div class="card" style="margin-bottom:12px"><h2>Archivio su iPhone e iPad</h2>' +
-      '<p class="muted">I pazienti non passano da soli. Sul Mac tocca <strong>Esporta archivio</strong> e salva il file in iCloud. Sull\'altro dispositivo tocca <strong>Importa archivio</strong> e scegli quel file.</p>' +
-      '<div class="stack"><button class="btn secondary" type="button" data-action="export-backup">Esporta archivio</button>' +
-      '<label class="btn secondary">Importa archivio<input class="import-file" type="file" accept="application/json,.json" hidden></label></div></div>' +
+      icloudCard() +
       '<div class="list">' +
       linkRow("#/esporta", "Esporta e invia", "Excel o PDF dal giorno al giorno") +
       linkRow("#/impostazioni", "Dati del professionista", "Intestazione di legge sulle fatture") +
@@ -810,11 +883,9 @@
       '<div class="field"><label for="new-pin">Nuovo PIN (4-6 cifre)</label><input id="new-pin" inputmode="numeric" type="password" autocomplete="off"></div>' +
       '<div class="stack"><button class="btn secondary" type="button" data-action="set-pin">Imposta PIN</button>' +
       (s.pinHash ? '<button class="btn ghost" type="button" data-action="clear-pin">Rimuovi PIN</button>' : "") + "</div>" +
-      '<div class="section-title"><h2>Copia di sicurezza</h2></div>' +
-      '<p class="muted">iPhone e iPad non condividono l\'archivio da soli. Esporta il file e importalo sull\'altro dispositivo: finisce in File o in iCloud.</p>' +
-      '<div class="stack"><button class="btn secondary" type="button" data-action="export-backup">Esporta archivio</button>' +
-      '<label class="btn secondary">Importa archivio<input class="import-file" type="file" accept="application/json,.json" hidden></label>' +
-      '<button class="btn ghost" type="button" data-action="restore-seed">Ripristina i dati del foglio Excel</button></div>';
+      '<div class="section-title"><h2>Copia e iCloud</h2></div>' +
+      icloudCard() +
+      '<button class="btn ghost" type="button" data-action="restore-seed">Ripristina i dati del foglio Excel</button>';
   }
 
   function viewHelp() {
@@ -822,11 +893,12 @@
       '<div class="card help"><ol>' +
       "<li>In Safari, su iPhone o iPad, apri <strong>https://stefanoinnamorati.github.io/fatture-sonia/</strong>. Il Mac può restare spento.</li>" +
       "<li>Tocca Condividi e poi <strong>Aggiungi a Home</strong>.</li>" +
-      "<li>La prima volta i pazienti non ci sono. Sul Mac apri l'app, vai in <strong>Altro</strong>, tocca <strong>Esporta archivio</strong> e salva il file in iCloud.</li>" +
-      "<li>Sull'iPad o sull'iPhone, in <strong>Altro</strong>, tocca <strong>Importa archivio</strong> e scegli quel file.</li>" +
+      "<li>La prima volta i pazienti non ci sono. In <strong>Altro</strong> scegli una cartella dentro iCloud Drive, oppure tocca <strong>Aggiorna da iCloud</strong> e apri <strong>archivio-fatture-sonia.json</strong>.</li>" +
+      "<li>Dopo una modifica su iPhone, tocca <strong>Pubblica su iCloud</strong> e sostituisci quel file nella stessa cartella. Chrome sul Mac, con la cartella collegata, lo fa da solo.</li>" +
+      "<li>Se la fattura supera 77,47 €, apri la fattura e archivia la foto del foglio con la marca da bollo, oppure il PDF dell'assolvimento elettronico.</li>" +
       "<li>Per mandare il riepilogo: Esporta, scegli le date, poi <strong>Invia per email</strong>.</li>" +
       "</ol>" +
-      "<p>I pazienti restano solo su questo dispositivo. Il PDF della singola fattura riporta albo, partita IVA, codice fiscale, studio, domicilio, prestazione, cassa ENPAP e bollo. Non sostituisce l'invio della fattura elettronica al Sistema di Interscambio, se è dovuto.</p>" +
+      "<p>I pazienti e le scansioni del bollo restano su questo dispositivo finché non li pubblichi nella cartella iCloud. Il PDF della singola fattura riporta albo, partita IVA, codice fiscale, studio, domicilio, prestazione, cassa ENPAP e bollo. Non sostituisce l'invio della fattura elettronica al Sistema di Interscambio, se è dovuto.</p>" +
       "<p>Una pro forma non è una fattura: ha una numerazione propria e non entra nel riepilogo. Quando la prestazione è assolta, aprila e tocca <strong>Converti in fattura</strong>: riceve il primo numero fiscale libero. Se un numero di fattura è sbagliato, aprila in modifica e cambialo. Il numero deve restare unico nell'anno; se la sequenza resta bucata, l'app lo segnala.</p></div>";
   }
 
@@ -933,6 +1005,24 @@
       await unlock();
     } else if (action === "export-backup") {
       await exportBackup();
+    } else if (action === "sync-choose") {
+      await chooseSyncFolder();
+    } else if (action === "sync-auth") {
+      await afterSync(Sync.authorize());
+    } else if (action === "sync-now") {
+      await afterSync(Sync.reconcile(true));
+    } else if (action === "sync-disconnect") {
+      if (!confirm("Scollegare la cartella? I file già salvati restano in iCloud.")) return;
+      await Sync.disconnect();
+      render();
+    } else if (action === "sync-keep-remote") {
+      await afterSync(Sync.keepRemote());
+    } else if (action === "sync-keep-local") {
+      await afterSync(Sync.keepLocal());
+    } else if (action === "bollo-modo") {
+      await saveBolloMeta(btn.dataset.id, { modo: btn.dataset.modo });
+    } else if (action === "bollo-remove") {
+      await removeBolloScan(btn.dataset.id);
     } else if (action === "restore-seed") {
       await restoreSeed();
     } else if (action === "make-excel") {
@@ -1072,9 +1162,17 @@
       convertedInvoiceId: (prev && prev.convertedInvoiceId) || "",
       convertedNumber: (prev && prev.convertedNumber) || "",
       convertedYear: (prev && prev.convertedYear) || "",
+      bolloProva: (prev && prev.bolloProva) || null,
     };
     await DB.put("invoices", inv);
     if (draft.id && draft.id !== inv.id) await DB.del("invoices", draft.id);
+    if (inv.bolloProva && inv.bolloProva.fileId) {
+      const scan = S.files.find(function (file) { return file.id === inv.bolloProva.fileId; });
+      if (scan && scan.invoiceId !== inv.id) {
+        scan.invoiceId = inv.id;
+        await DB.put("files", scan);
+      }
+    }
     await syncDocumentLinks(inv, draft.id || inv.id);
     draft = null;
     await reload();
@@ -1142,6 +1240,9 @@
     if (!proforma && inv.proformaNumber) extra = " La pro forma torna disponibile e si può convertire di nuovo.";
     if (!confirm("Eliminare " + docLabel(inv) + "?" + extra)) return;
     await DB.del("invoices", id);
+    for (const file of S.files) {
+      if (file.invoiceId === id || (inv.bolloProva && file.id === inv.bolloProva.fileId)) await DB.del("files", file.id);
+    }
     for (const ap of S.appointments) {
       let changed = false;
       if (ap.invoiceId === id) {
@@ -1307,23 +1408,15 @@
   }
 
   async function exportBackup() {
-    const payload = {
-      kind: "fatture-sonia-backup",
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      patients: S.patients,
-      invoices: S.invoices,
-      appointments: S.appointments,
-      professional: S.settings,
-    };
-    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
-    const name = "Archivio_fatture_sonia_" + Money.todayISO() + ".json";
+    const blob = await Sync.archiveBlob();
+    const name = Sync.FILE_NAME;
     try {
-      const how = await shareOrDownload([{ blob: blob, name: name }], "Copia di sicurezza delle fatture");
-      toast(how === "shared" ? "Salva il file in iCloud o in File" : "Archivio scaricato");
+      const how = await shareOrDownload([{ blob: blob, name: name }], "Archivio fatture, da salvare in iCloud Drive");
+      toast(how === "shared" ? "Scegli File e sostituisci archivio-fatture-sonia.json nella cartella iCloud" : "Archivio scaricato: spostalo nella cartella iCloud, sostituendo il file precedente");
     } catch (err) {
       if (err && err.name === "AbortError") return;
       downloadBlob(blob, name);
+      toast("Archivio scaricato");
     }
   }
 
@@ -1344,18 +1437,138 @@
     let data;
     try { data = JSON.parse(await file.text()); }
     catch (e) { return toast("File non leggibile."); }
-    if (!data || data.kind !== "fatture-sonia-backup" || !Array.isArray(data.patients) || !Array.isArray(data.invoices)) {
-      return toast("Questo non è un archivio dell'app.");
+    if (!Sync.validArchive(data)) return toast("Questo non è un archivio dell'app.");
+    const localStamp = (await DB.getMeta("updatedAt")) || "";
+    const remoteStamp = data.updatedAt || data.exportedAt || "";
+    let message = "Sostituire i dati di questo dispositivo con il file iCloud?";
+    if (localStamp && remoteStamp && remoteStamp < localStamp) {
+      message = "Il file iCloud è più vecchio di questo dispositivo. Sostituire comunque i dati locali?";
     }
-    if (!confirm("Sostituire tutti i dati di questo dispositivo con l'archivio?")) return;
-    await DB.importAll({
-      patients: data.patients,
-      invoices: data.invoices,
-      appointments: data.appointments || [],
-      professional: data.professional || window.activeSeed().professional,
-    });
+    if (!confirm(message)) return;
+    await Sync.applyPayload(data);
     await reload();
-    toast("Archivio importato");
+    toast("Archivio aggiornato da iCloud");
+    render();
+  }
+
+  function prepareBolloFile(file) {
+    if (!file.type || file.type.indexOf("image/") !== 0) return Promise.resolve(file);
+    return new Promise(function (resolve) {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = function () {
+        const max = 1800;
+        let w = img.width;
+        let h = img.height;
+        if (w > max || h > max) {
+          const scale = max / Math.max(w, h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        canvas.toBlob(function (blob) {
+          URL.revokeObjectURL(url);
+          const name = String(file.name || "bollo").replace(/\.\w+$/, "") + ".jpg";
+          resolve(blob ? new File([blob], name, { type: "image/jpeg" }) : file);
+        }, "image/jpeg", 0.72);
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        resolve(file);
+      };
+      img.src = url;
+    });
+  }
+
+  async function saveBolloMeta(id, patch) {
+    const inv = S.invoices.find(function (item) { return item.id === id; });
+    if (!inv) return;
+    const prev = inv.bolloProva || {};
+    inv.bolloProva = {
+      modo: (patch && patch.modo) || prev.modo || (S.settings.bolloMode === "virtuale" ? "elettronica" : "cartacea"),
+      data: patch && patch.data != null ? patch.data : (prev.data || ""),
+      fileId: prev.fileId || "",
+    };
+    await DB.put("invoices", inv);
+    await reload();
+    render();
+  }
+
+  async function saveBolloScan(id, file) {
+    const inv = S.invoices.find(function (item) { return item.id === id; });
+    if (!inv) return;
+    const prepared = await prepareBolloFile(file);
+    const prev = inv.bolloProva || {};
+    const fileId = prev.fileId || ("bollo-" + id);
+    await DB.put("files", {
+      id: fileId,
+      invoiceId: inv.id,
+      role: "bollo",
+      name: prepared.name || "bollo",
+      type: prepared.type || "application/octet-stream",
+      blob: prepared,
+    });
+    inv.bolloProva = {
+      modo: prev.modo || (S.settings.bolloMode === "virtuale" ? "elettronica" : "cartacea"),
+      data: prev.data || Money.todayISO(),
+      fileId: fileId,
+    };
+    const dateEl = document.getElementById("bollo-data");
+    if (dateEl && dateEl.value) inv.bolloProva.data = dateEl.value;
+    await DB.put("invoices", inv);
+    await reload();
+    toast(inv.bolloProva.modo === "elettronica" ? "PDF del bollo archiviato" : "Scansione della marca archiviata");
+    render();
+  }
+
+  async function removeBolloScan(id) {
+    const inv = S.invoices.find(function (item) { return item.id === id; });
+    if (!inv || !inv.bolloProva || !inv.bolloProva.fileId) return;
+    if (!confirm("Rimuovere la scansione del bollo?")) return;
+    await DB.del("files", inv.bolloProva.fileId);
+    inv.bolloProva.fileId = "";
+    await DB.put("invoices", inv);
+    await reload();
+    toast("Scansione rimossa");
+    render();
+  }
+
+  async function chooseSyncFolder() {
+    try {
+      const result = await Sync.chooseFolder();
+      await finishSync(result, "Cartella iCloud collegata");
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      toast("Questa versione di Safari non può tenere aperta una cartella. Usa Pubblica e Aggiorna.");
+    }
+  }
+
+  async function afterSync(promise) {
+    try {
+      const result = await promise;
+      await finishSync(result, "");
+    } catch (err) {
+      console.error(err);
+      toast("Sincronizzazione non riuscita.");
+    }
+  }
+
+  async function finishSync(result, okMessage) {
+    if (result === "applied") {
+      await reload();
+      toast("Dati aggiornati da iCloud");
+    } else if (result === "pushed") {
+      toast(okMessage || "Cartella iCloud aggiornata");
+    } else if (result === "auth") {
+      toast("Autorizza di nuovo la cartella.");
+    } else if (result === "conflict") {
+      toast("Scegli quale copia tenere.");
+    } else if (okMessage) {
+      toast(okMessage);
+    }
     render();
   }
 
@@ -1423,6 +1636,13 @@
       importBackup(e.target.files[0]).catch(function () { toast("Importazione non riuscita."); });
       e.target.value = "";
     }
+    if (e.target.classList.contains("bollo-file") && e.target.files && e.target.files[0]) {
+      saveBolloScan(e.target.dataset.id, e.target.files[0]).catch(function () { toast("Scansione non archiviata."); });
+      e.target.value = "";
+    }
+    if (e.target.id === "bollo-data") {
+      saveBolloMeta(e.target.dataset.id, { data: e.target.value }).catch(function () { toast("Data non salvata."); });
+    }
     if (e.target.id === "ex-from" || e.target.id === "ex-to" || e.target.id === "ex-xlsx" || e.target.id === "ex-pdf" || e.target.id === "ex-invoices" || e.target.id === "ex-mail") {
       readExportInputs();
       if (e.target.id === "ex-from" || e.target.id === "ex-to") render();
@@ -1447,14 +1667,38 @@
     }
   });
 
+  window.onSyncStatus = function () {
+    if (!S.settings || locked()) return;
+    const parts = route().parts;
+    if (!parts.length || parts[0] === "altro" || parts[0] === "impostazioni") render();
+  };
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) return;
+    Sync.reconcile(false).then(function (result) {
+      if (result === "applied") {
+        reload().then(function () {
+          toast("Dati aggiornati da iCloud");
+          render();
+        });
+      } else if (result === "conflict") {
+        render();
+      }
+    }).catch(function () {});
+  });
+
   DB.open().then(async function () {
-    if (!(await DB.getMeta("seeded"))) await DB.importAll(window.activeSeed());
+    await DB.runQuiet(async function () {
+      if (!(await DB.getMeta("seeded"))) await DB.importAll(window.activeSeed());
+    });
     await reload();
+    const syncResult = await Sync.boot();
+    if (syncResult === "applied") await reload();
     if ("serviceWorker" in navigator && location.protocol !== "file:") {
       navigator.serviceWorker.register("sw.js").catch(function () {});
     }
     if (!location.hash) location.hash = "#/";
     render();
+    if (syncResult === "applied") toast("Dati aggiornati da iCloud");
   }).catch(function (err) {
     console.error(err);
     document.getElementById("app").innerHTML = "<p>Non riesco ad aprire l'archivio su questo browser.</p>";
