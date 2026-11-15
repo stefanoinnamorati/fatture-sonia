@@ -14,6 +14,7 @@
   };
   let handle = null;
   let generation = 0;
+  let timer = null;
   let applying = false;
   let pendingRemote = null;
 
@@ -256,13 +257,21 @@
       await DB.setMeta("updatedAt", stamp);
     });
     if (seen !== generation) return stamp;
-    if (handle && await permitted(handle, false)) {
+    if (handle) {
+      if (!(await permitted(handle, false))) {
+        state.needsAuth = true;
+        state.pending = false;
+        state.updatedAt = stamp;
+        notify();
+        return stamp;
+      }
       await writeToHandle(handle, stamp);
       if (seen !== generation) return stamp;
       await DB.runQuiet(async function () {
         await DB.setMeta("lastSyncedAt", stamp);
       });
       state.lastSyncedAt = stamp;
+      state.needsAuth = false;
       state.lastError = "";
       state.conflict = false;
       pendingRemote = null;
@@ -275,15 +284,25 @@
 
   function noteLocalChange() {
     if (applying) return;
-    generation += 1;
+    const gen = ++generation;
     const stamp = new Date().toISOString();
-    state.pending = true;
     state.updatedAt = stamp;
     state.conflict = false;
-    notify();
+    state.pending = !!handle;
+    if (handle) notify();
     DB.runQuiet(async function () {
       await DB.setMeta("updatedAt", stamp);
     }).catch(function () {});
+    if (!handle) return;
+    clearTimeout(timer);
+    timer = setTimeout(function () {
+      publishNow(gen).catch(function () {
+        if (gen !== generation) return;
+        state.lastError = "Non riesco a scrivere nella cartella.";
+        state.pending = false;
+        notify();
+      });
+    }, 700);
   }
 
   async function markSynced() {
@@ -304,8 +323,7 @@
     notify();
     try {
       if (handle) return await reconcile(true);
-      if (state.canPick) return "need-folder";
-      return "manual";
+      return "idle";
     } finally {
       state.syncing = false;
       notify();

@@ -344,23 +344,20 @@
     app.innerHTML = syncBannerHtml() + screen();
   }
 
-  function syncDirty() {
-    const st = window.Sync ? Sync.state : {};
-    return !!(st.syncing || st.pending || st.conflict || (st.updatedAt && st.updatedAt !== st.lastSyncedAt));
-  }
-
   function syncBannerHtml() {
-    if (!window.Sync || !syncDirty()) return "";
+    if (!window.Sync) return "";
     const st = Sync.state;
     if (st.conflict) {
       return '<div id="sync-banner" class="sync-banner">Il file e questo dispositivo hanno modifiche diverse.' +
         '<div class="stack" style="margin-top:8px"><button class="btn" type="button" data-action="sync-keep-remote">Tieni il file</button>' +
         '<button class="btn secondary" type="button" data-action="sync-keep-local">Tieni questo dispositivo</button></div></div>';
     }
-    let text = "Ci sono modifiche non ancora nel file. Scorri verso il basso per sincronizzarlo.";
-    if (st.syncing) text = "Sincronizzazione con il file…";
-    else if (st.canPick && !st.linked) text = "Ci sono modifiche non ancora nel file. Scegli la cartella in Impostazioni, poi scorri verso il basso.";
-    else if (!st.canPick) text = "Ci sono modifiche non ancora nel file. Scorri verso il basso per pubblicarlo.";
+    if (!st.canPick || !st.linked) return "";
+    let text = "";
+    if (st.needsAuth) text = "La cartella va autorizzata di nuovo. Apri Impostazioni.";
+    else if (st.lastError) text = st.lastError;
+    else if (st.syncing) text = "Aggiornamento del file…";
+    if (!text) return "";
     return '<div id="sync-banner" class="sync-banner">' + esc(text) + "</div>";
   }
 
@@ -801,12 +798,12 @@
     const st = window.Sync ? Sync.state : {};
     const when = st.updatedAt ? st.updatedAt.replace("T", " ").slice(0, 16) : "";
     const name = st.folderName || "Drive";
-    let status = st.canPick ? "Nessuna cartella memorizzata." : "In Safari ogni pubblicazione apre File.";
+    let status = st.canPick ? "Nessuna cartella collegata: le modifiche restano su questo dispositivo." : "Su questo browser la cartella non si può tenere aperta.";
     if (st.linked && st.needsAuth) status = "Cartella «" + name + "»: serve di nuovo il permesso di scrittura.";
-    else if (st.linked) status = "Cartella memorizzata: " + name + ".";
+    else if (st.linked) status = "Sincronizzazione attiva con «" + name + "». Ogni modifica si scrive nel file.";
     const intro = st.canPick
-      ? "Scegli una volta la cartella, in iCloud Drive oppure in Google Drive. Il dispositivo chiede il permesso e lo ricorda: <strong>Pubblica su iCloud</strong> scrive lì, finché non cambi cartella. Se il browser chiede per quanto tempo, consenti a ogni visita."
-      : "In Chrome o Edge la cartella scelta qui resta memorizzata. In Safari, <strong>Pubblica su iCloud</strong> apre File: sostituisci <strong>archivio-fatture-sonia.json</strong> nella stessa cartella. Per ricevere le modifiche tocca <strong>Aggiorna da iCloud</strong>.";
+      ? "Scegli una volta la cartella, in iCloud Drive oppure in Google Drive, e consenti l'accesso a ogni visita. Da quel momento la sincronizzazione è automatica: un salvataggio aggiorna il file e, all'apertura, l'app legge le modifiche arrivate dall'altro dispositivo. Scorrendo verso il basso si forza un aggiornamento subito."
+      : "La sincronizzazione continua è disponibile in Chrome o Edge sul Mac: lì si sceglie la cartella una volta. Safari, anche su iPhone, non lascia a un sito il permesso duraturo su una cartella, quindi qui si può solo copiare il file o leggerne uno già salvato.";
     return '<div class="card" style="margin-bottom:12px"><h2>Cartella su Drive</h2>' +
       '<p class="muted">Pazienti, fatture e scansioni del bollo stanno nel file <strong>archivio-fatture-sonia.json</strong>. ' + intro + "</p>" +
       '<p>' + esc(status) + (when ? " Ultima modifica " + esc(when) + "." : "") + "</p>" +
@@ -817,11 +814,10 @@
       '<div class="stack">' +
       (st.canPick && !st.linked ? '<button class="btn" type="button" data-action="sync-choose">Scegli cartella su File o Drive</button>' : "") +
       (st.canPick && st.linked && st.needsAuth ? '<button class="btn" type="button" data-action="sync-auth">Autorizza la cartella</button>' : "") +
-      (st.canPick && st.linked ? '<button class="btn" type="button" data-action="export-backup">Pubblica su iCloud</button>' : "") +
       (st.canPick && st.linked ? '<button class="btn secondary" type="button" data-action="sync-now">Aggiorna ora</button>' : "") +
       (st.canPick && st.linked ? '<button class="btn secondary" type="button" data-action="sync-choose">Cambia cartella</button>' : "") +
-      (!st.canPick ? '<button class="btn" type="button" data-action="export-backup">Pubblica su iCloud</button>' +
-        '<label class="btn secondary">Aggiorna da iCloud<input class="import-file" type="file" accept="application/json,.json" hidden></label>' : "") +
+      (!st.canPick ? '<button class="btn secondary" type="button" data-action="export-backup">Copia il file</button>' +
+        '<label class="btn secondary">Leggi un file<input class="import-file" type="file" accept="application/json,.json" hidden></label>' : "") +
       (st.linked ? '<button class="btn ghost" type="button" data-action="sync-disconnect">Scollega cartella</button>' : "") +
       "</div></div>";
   }
@@ -1191,8 +1187,8 @@
       '<div class="card help"><ol>' +
       "<li>In Safari, su iPhone o iPad, apri <strong>https://stefanoinnamorati.github.io/fatture-sonia/</strong>. Il Mac può restare spento.</li>" +
       "<li>Tocca Condividi e poi <strong>Aggiungi a Home</strong>.</li>" +
-      "<li>La prima volta i pazienti non ci sono. In <strong>Impostazioni</strong> scegli la cartella su File o Drive. In Safari tocca <strong>Aggiorna da iCloud</strong> e apri <strong>archivio-fatture-sonia.json</strong>.</li>" +
-      "<li>Con la cartella memorizzata, <strong>Pubblica su iCloud</strong> scrive lì senza riaprire File. In Safari ogni pubblicazione chiede di sostituire il file nella stessa cartella.</li>" +
+      "<li>La sincronizzazione continua si attiva in Chrome o Edge sul Mac: in <strong>Impostazioni</strong> scegli una volta la cartella su iCloud Drive o Google Drive. I salvataggi aggiornano il file da soli.</li>" +
+      "<li>Safari e iPhone non possono tenere aperta quella cartella. Da lì, se serve un passaggio singolo, usa <strong>Copia il file</strong> e <strong>Leggi un file</strong>.</li>" +
       "<li>Se la fattura supera 77,47 €, apri la fattura e archivia la foto del foglio con la marca da bollo, oppure il PDF dell'assolvimento elettronico.</li>" +
       "<li>Per mandare il riepilogo: Esporta, scegli le date, poi <strong>Invia per email</strong>.</li>" +
       "<li>In Agenda tocca <strong>Compleanni del mese</strong> e <strong>Prossimi appuntamenti</strong>. Il numero di seduta prosegue da <strong>Sedute già effettuate</strong> nella scheda paziente.</li>" +
@@ -1996,10 +1992,7 @@
     const name = Sync.FILE_NAME;
     try {
       const how = await shareOrDownload([{ blob: blob, name: name }], "Archivio fatture, da sostituire nella cartella già scelta");
-      if (how === "shared") {
-        await Sync.markSynced();
-        toast("In File, sostituisci archivio-fatture-sonia.json nella cartella già scelta");
-      } else toast("Archivio scaricato: sostituisci il file nella cartella già scelta");
+      toast(how === "shared" ? "Scegli dove salvare la copia del file" : "Copia del file scaricata");
     } catch (err) {
       if (err && err.name === "AbortError") return;
       downloadBlob(blob, name);
@@ -2126,10 +2119,15 @@
   async function chooseSyncFolder() {
     try {
       const result = await Sync.chooseFolder();
-      await finishSync(result, "Cartella iCloud collegata");
+      await finishSync(result, "Cartella collegata: la sincronizzazione è attiva");
     } catch (err) {
       if (err && err.name === "AbortError") return;
-      toast("Qui la cartella si memorizza con Chrome o Edge. In Safari usa Pubblica e Aggiorna.");
+      if (err && err.message === "unsupported") {
+        toast("Qui la cartella si memorizza con Chrome o Edge.");
+        return;
+      }
+      console.error(err);
+      toast("Cartella non collegata.");
     }
   }
 
@@ -2290,11 +2288,9 @@
     setPull(64, "sync");
     try {
       const result = await Sync.pullSync();
-      if (result === "manual") await exportBackup();
-      else if (result === "need-folder") toast("Scegli la cartella in Impostazioni: poi lo scorrimento aggiorna il file.");
-      else if (result === "busy") return;
-      else if (result === "idle") toast("Il file è già aggiornato");
-      else await finishSync(result, "File sincronizzato");
+      if (result === "busy") return;
+      if (result === "idle") toast("Il file è già aggiornato");
+      else await finishSync(result, "File aggiornato");
     } catch (err) {
       console.error(err);
       toast("Sincronizzazione non riuscita.");
@@ -2309,7 +2305,7 @@
     let dy = 0;
     let pointerId = null;
     function begin(y, target) {
-      if (locked() || Sync.state.syncing) return false;
+      if (locked() || Sync.state.syncing || !Sync.state.canPick || !Sync.state.linked) return false;
       if (target && target.closest && target.closest("#tabbar, input, textarea, select, button, label")) return false;
       if ((document.scrollingElement || document.documentElement).scrollTop > 0) return false;
       startY = y;

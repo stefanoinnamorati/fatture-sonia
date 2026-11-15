@@ -1,4 +1,4 @@
-const CACHE = "fatture-sonia-v14";
+const CACHE = "fatture-sonia-v15";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,11 +7,11 @@ const ASSETS = [
   "./js/money.js?v=5",
   "./js/places.js?v=1",
   "./js/db.js?v=4",
-  "./js/sync.js?v=4",
+  "./js/sync.js?v=5",
   "./js/xlsx.js?v=4",
   "./js/pdf.js?v=9",
   "./js/seed.js?v=5",
-  "./js/app.js?v=13",
+  "./js/app.js?v=14",
   "./vendor/jspdf.umd.min.js?v=3",
   "./assets/logo.png?v=3",
   "./assets/icon-180.png",
