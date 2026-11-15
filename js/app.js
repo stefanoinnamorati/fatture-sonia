@@ -352,7 +352,29 @@
         '<div class="stack" style="margin-top:8px"><button class="btn" type="button" data-action="sync-keep-remote">Tieni il file</button>' +
         '<button class="btn secondary" type="button" data-action="sync-keep-local">Tieni questo dispositivo</button></div></div>';
     }
-    if (!st.canPick || !st.linked) return "";
+    if (window.Drive && Drive.state.conflict) {
+      return '<div id="sync-banner" class="sync-banner">Drive e questo dispositivo hanno modifiche diverse.' +
+        '<div class="stack" style="margin-top:8px"><button class="btn" type="button" data-action="drive-keep-remote">Tieni Drive</button>' +
+        '<button class="btn secondary" type="button" data-action="drive-keep-local">Tieni questo dispositivo</button></div></div>';
+    }
+    if (window.Drive && Drive.state.linked && Drive.state.needsAuth) {
+      return '<div id="sync-banner" class="sync-banner">Google Drive va ricollegato per aggiornare gli altri dispositivi.' +
+        '<div class="stack" style="margin-top:8px"><button class="btn" type="button" data-action="drive-connect">Ricollega Drive</button></div></div>';
+    }
+    if (window.Drive && Drive.state.linked && (Drive.state.syncing || Drive.state.pending)) {
+      return '<div id="sync-banner" class="sync-banner">Aggiornamento su Drive…</div>';
+    }
+    if (window.Drive && Drive.state.linked && Drive.state.lastError) {
+      return '<div id="sync-banner" class="sync-banner">' + esc(Drive.state.lastError) + "</div>";
+    }
+    if (!st.canPick) {
+      if (window.Drive && Drive.state.linked) return "";
+      if (!(st.updatedAt && st.updatedAt !== st.lastSyncedAt)) return "";
+      return '<div id="sync-banner" class="sync-banner">Questa modifica è solo su questo dispositivo. Salva il file ponte nella cartella iCloud, poi sull\'altro dispositivo tocca Leggi il file ponte.' +
+        '<div class="stack" style="margin-top:8px"><button class="btn" type="button" data-action="export-backup">Salva sul file ponte</button>' +
+        '<label class="btn secondary">Leggi il file ponte<input class="import-file" type="file" accept="application/json,.json" hidden></label></div></div>';
+    }
+    if (!st.linked) return "";
     let text = "";
     if (st.needsAuth) text = "La cartella va autorizzata di nuovo. Apri Impostazioni.";
     else if (st.lastError) text = st.lastError;
@@ -571,6 +593,7 @@
       '<div class="stack" style="margin-top:14px"><a class="btn" href="#/fatture/nuova">Nuova fattura</a>' +
       '<a class="btn secondary" href="#/fatture/nuova?tipo=proforma">Nuova pro forma</a>' +
       '<a class="btn secondary" href="#/agenda/nuovo">Nuovo appuntamento</a></div>' +
+      bridgeHomeCard() +
       (function () {
         const todayBirth = birthdaysOn(today);
         return todayBirth.length ? '<div class="section-title"><h2>Compleanni</h2></div><div class="list">' + todayBirth.map(birthdayRow).join("") + "</div>" : "";
@@ -584,6 +607,14 @@
       (upcoming.length ? '<div class="list">' + upcoming.map(appointmentRow).join("") + "</div>" : '<div class="empty">Nessun appuntamento in programma.</div>') +
       '<div class="section-title"><h2>Ultime fatture</h2><a href="#/fatture">Tutte</a></div>' +
       '<div class="list">' + recent.map(invoiceRow).join("") + "</div>";
+  }
+
+  function bridgeHomeCard() {
+    const st = window.Sync && Sync.state;
+    if (!st || st.canPick || (window.Drive && Drive.state.linked)) return "";
+    if (st.updatedAt && st.updatedAt !== st.lastSyncedAt) return "";
+    return '<div class="note-box">Per ricevere una modifica fatta su iPad o iPhone, leggi il file ponte dalla cartella iCloud.' +
+      '<label class="btn secondary" style="margin-top:8px">Leggi il file ponte<input class="import-file" type="file" accept="application/json,.json" hidden></label></div>';
   }
 
   function invoiceRow(inv) {
@@ -797,14 +828,14 @@
   function icloudCard() {
     const st = window.Sync ? Sync.state : {};
     const when = st.updatedAt ? st.updatedAt.replace("T", " ").slice(0, 16) : "";
-    const name = st.folderName || "Drive";
-    let status = st.canPick ? "Nessuna cartella collegata: le modifiche restano su questo dispositivo." : "Su questo browser la cartella non si può tenere aperta.";
+    const name = st.folderName || "cartella";
+    let status = st.canPick ? "Nessuna cartella collegata: le modifiche restano su questo dispositivo." : "Il file ponte va salvato e letto a mano tra iPad e iPhone.";
     if (st.linked && st.needsAuth) status = "Cartella «" + name + "»: serve di nuovo il permesso di scrittura.";
     else if (st.linked) status = "Sincronizzazione attiva con «" + name + "». Ogni modifica si scrive nel file.";
     const intro = st.canPick
-      ? "Scegli una volta la cartella, in iCloud Drive oppure in Google Drive, e consenti l'accesso a ogni visita. Da quel momento la sincronizzazione è automatica: un salvataggio aggiorna il file e, all'apertura, l'app legge le modifiche arrivate dall'altro dispositivo. Scorrendo verso il basso si forza un aggiornamento subito."
-      : "La sincronizzazione continua è disponibile in Chrome o Edge sul Mac: lì si sceglie la cartella una volta. Safari, anche su iPhone, non lascia a un sito il permesso duraturo su una cartella, quindi qui si può solo copiare il file o leggerne uno già salvato.";
-    return '<div class="card" style="margin-bottom:12px"><h2>Cartella su Drive</h2>' +
+      ? "Scegli una volta la cartella in File, per esempio dentro iCloud Drive, e consenti l'accesso a ogni visita. Da quel momento la sincronizzazione è automatica: un salvataggio aggiorna il file e, all'apertura, l'app legge le modifiche arrivate dall'altro dispositivo. Scorrendo verso il basso si forza un aggiornamento subito."
+      : "iPad e iPhone tengono ciascuno la propria copia: Safari non può scrivere da solo nella cartella iCloud. Dopo una modifica tocca <strong>Salva sul file ponte</strong> e, in File, sostituisci <strong>archivio-fatture-sonia.json</strong> nella stessa cartella. Sull'altro dispositivo tocca <strong>Leggi il file ponte</strong>. In Chrome o Edge sul Mac la cartella scelta una volta si aggiorna da sola.";
+    return '<div class="card" style="margin-bottom:12px"><h2>Cartella su File</h2>' +
       '<p class="muted">Pazienti, fatture e scansioni del bollo stanno nel file <strong>archivio-fatture-sonia.json</strong>. ' + intro + "</p>" +
       '<p>' + esc(status) + (when ? " Ultima modifica " + esc(when) + "." : "") + "</p>" +
       (st.lastError ? '<div class="warn-box">' + esc(st.lastError) + "</div>" : "") +
@@ -812,13 +843,38 @@
         '<div class="stack"><button class="btn" type="button" data-action="sync-keep-remote">Tieni la copia della cartella</button>' +
         '<button class="btn secondary" type="button" data-action="sync-keep-local">Tieni questo dispositivo</button></div>' : "") +
       '<div class="stack">' +
-      (st.canPick && !st.linked ? '<button class="btn" type="button" data-action="sync-choose">Scegli cartella su File o Drive</button>' : "") +
+      (st.canPick && !st.linked ? '<button class="btn" type="button" data-action="sync-choose">Scegli la cartella</button>' : "") +
       (st.canPick && st.linked && st.needsAuth ? '<button class="btn" type="button" data-action="sync-auth">Autorizza la cartella</button>' : "") +
       (st.canPick && st.linked ? '<button class="btn secondary" type="button" data-action="sync-now">Aggiorna ora</button>' : "") +
       (st.canPick && st.linked ? '<button class="btn secondary" type="button" data-action="sync-choose">Cambia cartella</button>' : "") +
-      (!st.canPick ? '<button class="btn secondary" type="button" data-action="export-backup">Copia il file</button>' +
-        '<label class="btn secondary">Leggi un file<input class="import-file" type="file" accept="application/json,.json" hidden></label>' : "") +
+      (!st.canPick ? '<button class="btn" type="button" data-action="export-backup">Salva sul file ponte</button>' +
+        '<label class="btn secondary">Leggi il file ponte<input class="import-file" type="file" accept="application/json,.json" hidden></label>' : "") +
       (st.linked ? '<button class="btn ghost" type="button" data-action="sync-disconnect">Scollega cartella</button>' : "") +
+      "</div></div>" + driveCard();
+  }
+
+  function driveCard() {
+    const drv = window.Drive ? Drive.state : {};
+    const id = (S.settings && S.settings.driveClientId) || "";
+    let status = "Drive non collegato.";
+    if (drv.linked && drv.needsAuth) status = "Accesso a Drive scaduto: ricollega l'account.";
+    else if (drv.linked) status = "Drive collegato. Ogni modifica si copia su iPad e iPhone.";
+    if (drv.lastError) status += " " + drv.lastError;
+    return '<div class="card" style="margin-bottom:12px"><h2>Google Drive</h2>' +
+      '<p class="muted">Seconda strada, gratuita, utile su iPad e iPhone. Lo stesso account Google tiene il file <strong>archivio-fatture-sonia.json</strong>. La cartella su iCloud resta disponibile.</p>' +
+      "<p>" + esc(status) + "</p>" +
+      '<details class="fold"><summary><span>Come ottenere l\'ID gratuito</span></summary>' +
+      "<ol>" +
+      "<li>Apri console.cloud.google.com, crea un progetto e abilita l'API Google Drive.</li>" +
+      "<li>Nella schermata di consenso OAuth scegli Esterna, lascia l'app in test e aggiungi l'email usata su iPad e iPhone.</li>" +
+      "<li>Crea un ID client OAuth di tipo Applicazione web. Nelle origini JavaScript autorizzate inserisci <strong>https://stefanoinnamorati.github.io</strong>.</li>" +
+      "<li>Incolla qui l'ID, che finisce con <strong>.apps.googleusercontent.com</strong>, e tocca Collega Drive su ogni dispositivo.</li>" +
+      "</ol></details>" +
+      '<div class="field"><label for="drive-client">ID client Google</label><input id="drive-client" value="' + esc(id) + '" autocomplete="off" spellcheck="false"></div>' +
+      '<div class="stack"><button class="btn secondary" type="button" data-action="save-drive-client">Salva ID</button>' +
+      (id ? '<button class="btn" type="button" data-action="drive-connect">' + (drv.linked && !drv.needsAuth ? "Ricollega Drive" : "Collega Drive") + "</button>" : "") +
+      (drv.linked ? '<button class="btn secondary" type="button" data-action="drive-now">Aggiorna ora</button>' : "") +
+      (drv.linked ? '<button class="btn ghost" type="button" data-action="drive-disconnect">Scollega Drive</button>' : "") +
       "</div></div>";
   }
 
@@ -1187,8 +1243,9 @@
       '<div class="card help"><ol>' +
       "<li>In Safari, su iPhone o iPad, apri <strong>https://stefanoinnamorati.github.io/fatture-sonia/</strong>. Il Mac può restare spento.</li>" +
       "<li>Tocca Condividi e poi <strong>Aggiungi a Home</strong>.</li>" +
-      "<li>La sincronizzazione continua si attiva in Chrome o Edge sul Mac: in <strong>Impostazioni</strong> scegli una volta la cartella su iCloud Drive o Google Drive. I salvataggi aggiornano il file da soli.</li>" +
-      "<li>Safari e iPhone non possono tenere aperta quella cartella. Da lì, se serve un passaggio singolo, usa <strong>Copia il file</strong> e <strong>Leggi un file</strong>.</li>" +
+      "<li>Tra iPad e iPhone, con Google Drive: in Altro incolla l'ID client, tocca <strong>Collega Drive</strong> sullo stesso account. Le modifiche si copiano da sole.</li>" +
+      "<li>Senza Drive: dopo una modifica tocca <strong>Salva sul file ponte</strong> e sostituisci <strong>archivio-fatture-sonia.json</strong> nella cartella iCloud. Sull'altro dispositivo tocca <strong>Leggi il file ponte</strong>.</li>" +
+      "<li>In Chrome o Edge sul Mac la stessa cartella, scelta una volta in Impostazioni, si aggiorna da sola.</li>" +
       "<li>Se la fattura supera 77,47 €, apri la fattura e archivia la foto del foglio con la marca da bollo, oppure il PDF dell'assolvimento elettronico.</li>" +
       "<li>Per mandare il riepilogo: Esporta, scegli le date, poi <strong>Invia per email</strong>.</li>" +
       "<li>In Agenda tocca <strong>Compleanni del mese</strong> e <strong>Prossimi appuntamenti</strong>. Il numero di seduta prosegue da <strong>Sedute già effettuate</strong> nella scheda paziente.</li>" +
@@ -1308,6 +1365,20 @@
       await unlock();
     } else if (action === "export-backup") {
       await exportBackup();
+    } else if (action === "save-drive-client") {
+      await saveDriveClient();
+    } else if (action === "drive-connect") {
+      await connectDrive();
+    } else if (action === "drive-disconnect") {
+      await Drive.disconnect();
+      toast("Drive scollegato su questo dispositivo");
+      render();
+    } else if (action === "drive-now") {
+      await finishSync(await Drive.pull(), "Drive aggiornato");
+    } else if (action === "drive-keep-remote") {
+      await finishSync(await Drive.keepRemote(), "Dati aggiornati da Drive");
+    } else if (action === "drive-keep-local") {
+      await finishSync(await Drive.keepLocal(), "Drive aggiornato");
     } else if (action === "sync-choose") {
       await chooseSyncFolder();
     } else if (action === "sync-auth") {
@@ -1956,6 +2027,31 @@
     toast("Dati salvati");
   }
 
+  async function saveDriveClient() {
+    const input = document.getElementById("drive-client");
+    if (!input) return;
+    const id = input.value.trim();
+    if (id && id.indexOf(".apps.googleusercontent.com") < 0) return toast("L'ID client finisce con .apps.googleusercontent.com");
+    S.settings.driveClientId = id;
+    await DB.setMeta("settings", S.settings);
+    toast(id ? "ID Drive salvato" : "ID Drive rimosso");
+    render();
+  }
+
+  async function connectDrive() {
+    if (!(await Drive.clientId())) return toast("Prima salva l'ID client Google.");
+    try {
+      const result = await Drive.connect();
+      await finishSync(result, "Drive collegato: la sincronizzazione è attiva");
+    } catch (err) {
+      if (err && (err.name === "AbortError" || err.message === "popup_closed")) return;
+      console.error(err);
+      if (err && err.message === "missing-client") return toast("Prima salva l'ID client Google.");
+      if (err && err.message === "gis") return toast("Google non è raggiungibile in questo momento.");
+      toast("Drive non collegato. Controlla l'ID e che l'email sia tra gli utenti di test.");
+    }
+  }
+
   async function setPin() {
     const pin = document.getElementById("new-pin").value.trim();
     if (!/^\d{4,6}$/.test(pin)) return toast("Il PIN è di 4-6 cifre.");
@@ -1976,7 +2072,7 @@
   async function exportBackup() {
     if (Sync.state.canPick) {
       if (!Sync.state.linked) {
-        toast("Scegli prima la cartella su File o Drive. Resta quella finché non la cambi.");
+        toast("Scegli prima la cartella. Resta quella finché non la cambi.");
         return;
       }
       try {
@@ -1991,8 +2087,11 @@
     const blob = await Sync.archiveBlob();
     const name = Sync.FILE_NAME;
     try {
-      const how = await shareOrDownload([{ blob: blob, name: name }], "Archivio fatture, da sostituire nella cartella già scelta");
-      toast(how === "shared" ? "Scegli dove salvare la copia del file" : "Copia del file scaricata");
+      const how = await shareOrDownload([{ blob: blob, name: name }], "Sostituisci archivio-fatture-sonia.json nella cartella iCloud");
+      if (how === "shared") {
+        await Sync.markSynced();
+        toast("In File, sostituisci archivio-fatture-sonia.json nella cartella iCloud. Poi sull'altro dispositivo tocca Leggi il file ponte.");
+      } else toast("File scaricato: sostituiscilo nella cartella iCloud, con lo stesso nome.");
     } catch (err) {
       if (err && err.name === "AbortError") return;
       downloadBlob(blob, name);
@@ -2020,9 +2119,11 @@
     if (!Sync.validArchive(data)) return toast("Questo non è un archivio dell'app.");
     const localStamp = (await DB.getMeta("updatedAt")) || "";
     const remoteStamp = data.updatedAt || data.exportedAt || "";
-    let message = "Sostituire i dati di questo dispositivo con il file iCloud?";
+    let message = "Il file ponte contiene le modifiche dell'altro dispositivo. Aggiornare questo dispositivo?";
     if (localStamp && remoteStamp && remoteStamp < localStamp) {
-      message = "Il file iCloud è più vecchio di questo dispositivo. Sostituire comunque i dati locali?";
+      message = "Questo file è più vecchio delle modifiche presenti qui. Se lo leggi, quelle modifiche si perdono. Continuare?";
+    } else if (localStamp && remoteStamp && remoteStamp === localStamp) {
+      message = "Il file ha la stessa versione di questo dispositivo. Sostituire comunque?";
     }
     if (!confirm(message)) return;
     await Sync.applyPayload(data);
@@ -2144,11 +2245,11 @@
   async function finishSync(result, okMessage) {
     if (result === "applied") {
       await reload();
-      toast("Dati aggiornati da iCloud");
+      toast(okMessage || "Dati aggiornati");
     } else if (result === "pushed") {
       toast(okMessage || "Cartella iCloud aggiornata");
     } else if (result === "auth") {
-      toast("Autorizza di nuovo la cartella.");
+      toast("Serve di nuovo l'autorizzazione.");
     } else if (result === "conflict") {
       toast("Scegli quale copia tenere.");
     } else if (okMessage) {
@@ -2283,14 +2384,25 @@
     }
   }
 
+  function pullTargets() {
+    const folder = !!(window.Sync && Sync.state.canPick && Sync.state.linked);
+    const drive = !!(window.Drive && Drive.state.linked && !Drive.state.needsAuth);
+    return { folder: folder, drive: drive };
+  }
+
   async function runPullSync() {
-    if (!window.Sync || Sync.state.syncing || locked()) return;
+    const targets = pullTargets();
+    if (locked() || (!targets.folder && !targets.drive)) return;
+    if ((targets.folder && Sync.state.syncing) || (targets.drive && Drive.state.syncing)) return;
     setPull(64, "sync");
     try {
-      const result = await Sync.pullSync();
-      if (result === "busy") return;
-      if (result === "idle") toast("Il file è già aggiornato");
-      else await finishSync(result, "File aggiornato");
+      const folderResult = targets.folder ? await Sync.pullSync() : "idle";
+      const driveResult = targets.drive ? await Drive.pull() : "idle";
+      if (folderResult === "applied" || driveResult === "applied") await finishSync("applied", "Dati aggiornati");
+      else if (folderResult === "conflict" || driveResult === "conflict") await finishSync("conflict", "");
+      else if (folderResult === "auth" || driveResult === "auth") await finishSync("auth", "");
+      else if (folderResult === "pushed" || driveResult === "pushed") toast("File aggiornato");
+      else toast("Il file è già aggiornato");
     } catch (err) {
       console.error(err);
       toast("Sincronizzazione non riuscita.");
@@ -2305,7 +2417,9 @@
     let dy = 0;
     let pointerId = null;
     function begin(y, target) {
-      if (locked() || Sync.state.syncing || !Sync.state.canPick || !Sync.state.linked) return false;
+      const targets = pullTargets();
+      if (locked() || (!targets.folder && !targets.drive)) return false;
+      if ((targets.folder && Sync.state.syncing) || (targets.drive && Drive.state.syncing)) return false;
       if (target && target.closest && target.closest("#tabbar, input, textarea, select, button, label")) return false;
       if ((document.scrollingElement || document.documentElement).scrollTop > 0) return false;
       startY = y;
@@ -2367,13 +2481,15 @@
   };
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) return;
-    Sync.reconcile(false).then(function (result) {
-      if (result === "applied") {
+    const jobs = [Sync.reconcile(false)];
+    if (window.Drive && Drive.state.linked && !Drive.state.needsAuth) jobs.push(Drive.pull());
+    Promise.all(jobs.map(function (job) { return job.catch(function () { return "error"; }); })).then(function (results) {
+      if (results.indexOf("applied") >= 0) {
         reload().then(function () {
-          toast("Dati aggiornati da iCloud");
+          toast("Dati aggiornati");
           render();
         });
-      } else if (result === "conflict") {
+      } else if (results.indexOf("conflict") >= 0 || results.indexOf("auth") >= 0) {
         render();
       }
     }).catch(function () {});
@@ -2385,13 +2501,14 @@
     });
     await reload();
     const syncResult = await Sync.boot();
-    if (syncResult === "applied") await reload();
+    const driveResult = window.Drive ? await Drive.boot() : "idle";
+    if (syncResult === "applied" || driveResult === "applied") await reload();
     if ("serviceWorker" in navigator && location.protocol !== "file:") {
       navigator.serviceWorker.register("sw.js").catch(function () {});
     }
     if (!location.hash) location.hash = "#/";
     render();
-    if (syncResult === "applied") toast("Dati aggiornati da iCloud");
+    if (syncResult === "applied" || driveResult === "applied") toast(driveResult === "applied" && syncResult !== "applied" ? "Dati aggiornati da Drive" : "Dati aggiornati");
   }).catch(function (err) {
     console.error(err);
     document.getElementById("app").innerHTML = "<p>Non riesco ad aprire l'archivio su questo browser.</p>";

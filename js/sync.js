@@ -289,10 +289,11 @@
     state.updatedAt = stamp;
     state.conflict = false;
     state.pending = !!handle;
-    if (handle) notify();
+    notify();
     DB.runQuiet(async function () {
       await DB.setMeta("updatedAt", stamp);
     }).catch(function () {});
+    if (window.Drive) Drive.onLocalChange();
     if (!handle) return;
     clearTimeout(timer);
     timer = setTimeout(function () {
