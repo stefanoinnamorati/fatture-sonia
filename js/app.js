@@ -17,6 +17,7 @@
     path: "",
     query: "",
     invoiceYear: String(new Date().getFullYear()),
+    invoiceKind: "tutte",
     month: Money.todayISO().slice(0, 7),
     day: Money.todayISO(),
     exportFrom: new Date().getFullYear() + "-01-01",
@@ -59,15 +60,97 @@
   }
 
   function lastInvoiceFor(patientId) {
-    return invoicesOf(patientId)[0];
+    const all = invoicesOf(patientId);
+    return all.find(isFiscal) || all[0];
   }
 
-  function nextNumber(year, ignoreId) {
+  function isProforma(inv) {
+    return !!(inv && inv.kind === "proforma");
+  }
+
+  function isFiscal(inv) {
+    return !!(inv && !isProforma(inv));
+  }
+
+  function docId(year, number, proforma) {
+    return (proforma ? "pf-" : "") + year + "-" + number;
+  }
+
+  function docLabel(inv) {
+    return (isProforma(inv) ? "Pro forma " : "Fattura ") + inv.number + "/" + inv.year;
+  }
+
+  function series(year, proforma, ignoreId) {
+    return S.invoices.filter(function (i) {
+      return i.year === year && i.id !== ignoreId && isProforma(i) === !!proforma;
+    });
+  }
+
+  function nextNumber(year, ignoreId, proforma) {
     let max = 0;
-    S.invoices.forEach(function (i) {
-      if (i.year === year && i.id !== ignoreId) max = Math.max(max, i.number);
+    series(year, proforma, ignoreId).forEach(function (i) {
+      max = Math.max(max, Number(i.number) || 0);
     });
     return max + 1;
+  }
+
+  function numberTaken(year, number, ignoreId, proforma) {
+    return series(year, proforma, ignoreId).some(function (i) { return Number(i.number) === number; });
+  }
+
+  function gapsWith(year, proforma, ignoreId, addNumber) {
+    const set = {};
+    series(year, proforma, ignoreId).forEach(function (i) { set[Number(i.number)] = true; });
+    if (addNumber) set[addNumber] = true;
+    const keys = Object.keys(set).map(Number).filter(function (n) { return n > 0; });
+    if (!keys.length) return [];
+    const max = Math.max.apply(null, keys);
+    const missing = [];
+    for (let n = 1; n < max; n++) if (!set[n]) missing.push(n);
+    return missing;
+  }
+
+  function formatNums(list) {
+    if (!list.length) return "";
+    if (list.length === 1) return "il n. " + list[0];
+    const shown = list.slice(0, 6);
+    const tail = list.length > 6 ? "…" : "";
+    if (shown.length === 2) return "i n. " + shown[0] + " e " + shown[1] + tail;
+    return "i n. " + shown.slice(0, -1).join(", ") + " e " + shown[shown.length - 1] + tail;
+  }
+
+  function manca(list) {
+    return (list.length === 1 ? "manca " : "mancano ") + formatNums(list);
+  }
+
+  function lasciaScoperto(list) {
+    return (list.length === 1 ? "lascia scoperto " : "lascia scoperti ") + formatNums(list);
+  }
+
+  function invoiceKind() {
+    const tipo = route().q.get("tipo");
+    if (tipo === "proforma" || tipo === "fatture" || tipo === "tutte") return tipo;
+    return S.invoiceKind || "tutte";
+  }
+
+  function numberHintHtml(year, raw, ignoreId, proforma) {
+    const text = String(raw || "").trim();
+    if (!/^\d+$/.test(text) || Number(text) < 1) {
+      return '<div class="warn-box">Il numero è un intero da 1 in su. Il prossimo libero è ' + nextNumber(year, ignoreId, proforma) + ".</div>";
+    }
+    const n = Number(text);
+    if (numberTaken(year, n, ignoreId, proforma)) {
+      return '<div class="warn-box">Il n. ' + n + "/" + year + " è già usato " + (proforma ? "da un'altra pro forma." : "da un'altra fattura.") + "</div>";
+    }
+    const missing = gapsWith(year, proforma, ignoreId, n);
+    if (proforma) {
+      return '<div class="note-box">Numerazione solo delle pro forma: non occupa il progressivo delle fatture.' +
+        (missing.length ? " " + (missing.length === 1 ? "Resta scoperto " : "Restano scoperti ") + formatNums(missing) + "." : "") + "</div>";
+    }
+    if (missing.length) {
+      return '<div class="warn-box">Con questo numero la sequenza ' + year + " " + lasciaScoperto(missing) + ". Le fatture di un anno vanno di seguito, senza buchi. Se il numero è un errore, scrivi quello giusto.</div>";
+    }
+    return '<div class="note-box">Numero libero nella sequenza ' + year + ".</div>";
   }
 
   function sumOf(list) {
@@ -152,6 +235,7 @@
     if (p[0] === "pazienti") return viewPatients();
     if (p[0] === "fatture" && p[1] === "nuova") return viewInvoiceForm(null, r.q);
     if (p[0] === "fatture" && p[2] === "modifica") return viewInvoiceForm(S.invoices.find(function (i) { return i.id === p[1]; }), r.q);
+    if (p[0] === "fatture" && p[2] === "converti") return viewConvert(S.invoices.find(function (i) { return i.id === p[1]; }));
     if (p[0] === "fatture" && p[1]) return viewInvoice(S.invoices.find(function (i) { return i.id === p[1]; }));
     if (p[0] === "fatture") return viewInvoices();
     if (p[0] === "agenda" && p[1] === "nuovo") return viewAppointmentForm(null, r.q);
@@ -208,9 +292,10 @@
 
   function viewOggi() {
     const year = String(new Date().getFullYear());
-    const yearInvoices = S.invoices.filter(function (i) { return String(i.year) === year; });
+    const yearInvoices = S.invoices.filter(function (i) { return String(i.year) === year && isFiscal(i); });
     const totals = sumOf(yearInvoices);
-    const open = S.invoices.filter(function (i) { return !i.paymentDate; });
+    const open = S.invoices.filter(function (i) { return isFiscal(i) && !i.paymentDate; });
+    const openPf = S.invoices.filter(function (i) { return isProforma(i) && !i.convertedInvoiceId; });
     const today = Money.todayISO();
     const upcoming = S.appointments.filter(function (a) { return a.date >= today; })
       .sort(function (a, b) { return (a.date + a.time).localeCompare(b.date + b.time); })
@@ -225,7 +310,9 @@
       '<div class="card"><div class="label">Da incassare</div><div class="figure">' + esc(Money.formatEuro(sumOf(open).totale)) + "</div>" +
       '<div class="sub">' + open.length + " aperte</div></div></div>" +
       '<div class="stack" style="margin-top:14px"><a class="btn" href="#/fatture/nuova">Nuova fattura</a>' +
+      '<a class="btn secondary" href="#/fatture/nuova?tipo=proforma">Nuova pro forma</a>' +
       '<a class="btn secondary" href="#/agenda/nuovo">Nuovo appuntamento</a></div>' +
+      (openPf.length ? '<div class="note-box">' + openPf.length + ' pro forma ' + (openPf.length === 1 ? "aperta" : "aperte") + '. <a href="#/fatture?tipo=proforma">Apri l\'elenco</a></div>' : "") +
       '<div class="section-title"><h2>Prossimi appuntamenti</h2><a href="#/agenda">Agenda</a></div>' +
       (upcoming.length ? '<div class="list">' + upcoming.map(appointmentRow).join("") + "</div>" : '<div class="empty">Nessun appuntamento in programma.</div>') +
       '<div class="section-title"><h2>Ultime fatture</h2><a href="#/fatture">Tutte</a></div>' +
@@ -233,19 +320,23 @@
   }
 
   function invoiceRow(inv) {
+    const proforma = isProforma(inv);
     const paid = !!inv.paymentDate;
-    return '<a class="row" href="#/fatture/' + esc(inv.id) + '"><div class="avatar">' + inv.number + "</div><div class=\"main\">" +
+    const badge = proforma
+      ? (inv.convertedInvoiceId ? '<span class="badge ok">Convertita</span>' : '<span class="badge pf">Pro forma</span>')
+      : '<span class="badge ' + (paid ? "ok" : "wait") + '">' + (paid ? "Incassata" : "Da incassare") + "</span>";
+    return '<a class="row" href="#/fatture/' + esc(inv.id) + '"><div class="avatar' + (proforma ? " pf" : "") + '">' + (proforma ? "PF" : inv.number) + "</div><div class=\"main\">" +
       '<div class="name">' + esc(inv.patientName) + "</div>" +
-      '<div class="meta">n. ' + inv.number + "/" + inv.year + " · " + esc(Money.formatDateIT(inv.date)) + " · " + esc(inv.paymentMethod || "—") + "</div></div>" +
+      '<div class="meta">' + (proforma ? "Pro forma n. " : "n. ") + inv.number + "/" + inv.year + " · " + esc(Money.formatDateIT(inv.date)) + " · " + esc(inv.paymentMethod || "—") + "</div></div>" +
       '<div style="text-align:right"><div class="amount">' + esc(Money.formatEuro(inv.totale)) + "</div>" +
-      '<span class="badge ' + (paid ? "ok" : "wait") + '">' + (paid ? "Incassata" : "Da incassare") + "</span></div></a>";
+      badge + "</div></a>";
   }
 
   function appointmentRow(ap) {
     return '<a class="row" href="#/agenda/' + esc(ap.id) + '"><div class="avatar">' + esc((ap.time || "").slice(0, 2) || "•") + '</div><div class="main">' +
       '<div class="name">' + esc(ap.patientName) + "</div>" +
       '<div class="meta">' + esc(Money.formatDateIT(ap.date)) + (ap.time ? " · " + esc(ap.time) : "") + (ap.notes ? " · " + esc(ap.notes) : "") + "</div></div>" +
-      '<span class="badge ' + (ap.invoiced ? "ok" : "neutral") + '">' + (ap.invoiced ? "Fatturato" : "In agenda") + "</span></a>";
+      '<span class="badge ' + (ap.invoiced ? "ok" : ap.proformaId ? "pf" : "neutral") + '">' + (ap.invoiced ? "Fatturato" : ap.proformaId ? "Pro forma" : "In agenda") + "</span></a>";
   }
 
   function viewPatients() {
@@ -271,6 +362,8 @@
   function viewPatient(p) {
     if (!p) return missing("Paziente non trovato", "#/pazienti");
     const inv = invoicesOf(p.id);
+    const fiscal = inv.filter(isFiscal);
+    const openPf = inv.filter(function (i) { return isProforma(i) && !i.convertedInvoiceId; });
     const ap = S.appointments.filter(function (a) { return a.patientId === p.id; })
       .sort(function (a, b) { return (b.date + b.time).localeCompare(a.date + a.time); });
     return '<a class="back" href="#/pazienti">Pazienti</a>' +
@@ -284,9 +377,11 @@
       (!p.cf || !Money.cfValid(p.cf) ? '<div class="warn-box" style="margin-top:12px">Il codice fiscale manca o non torna: serve per la fattura e per la detrazione.</div>' : "") +
       "</div>" +
       '<div class="stack" style="margin-top:12px"><a class="btn" href="#/fatture/nuova?paziente=' + encodeURIComponent(p.id) + '">Nuova fattura</a>' +
+      '<a class="btn secondary" href="#/fatture/nuova?paziente=' + encodeURIComponent(p.id) + '&tipo=proforma">Nuova pro forma</a>' +
       '<a class="btn secondary" href="#/agenda/nuovo?paziente=' + encodeURIComponent(p.id) + '">Nuovo appuntamento</a>' +
       '<a class="btn secondary" href="#/pazienti/' + esc(p.id) + '/modifica">Modifica scheda</a></div>' +
-      '<div class="section-title"><h2>Fatture</h2><span>' + esc(Money.formatEuro(sumOf(inv).totale)) + "</span></div>" +
+      '<div class="section-title"><h2>Fatture</h2><span>' + esc(Money.formatEuro(sumOf(fiscal).totale)) + "</span></div>" +
+      (openPf.length ? '<p class="muted">Il totale è solo delle fatture. Le pro forma aperte non sono incluse.</p>' : "") +
       (inv.length ? '<div class="list">' + inv.map(invoiceRow).join("") + "</div>" : '<div class="empty">Ancora nessuna fattura.</div>') +
       '<div class="section-title"><h2>Appuntamenti</h2></div>' +
       (ap.length ? '<div class="list">' + ap.map(appointmentRow).join("") + "</div>" : '<div class="empty">Nessun appuntamento.</div>');
@@ -310,22 +405,49 @@
   function viewInvoices() {
     const years = Array.from(new Set(S.invoices.map(function (i) { return String(i.year); }).concat([String(new Date().getFullYear())]))).sort().reverse();
     const q = S.query;
+    const kind = invoiceKind();
     const list = filteredInvoices(q);
-    const chips = '<button class="chip' + (S.invoiceYear === "all" ? " on" : "") + '" type="button" data-action="chip-year" data-year="all">Tutte</button>' +
+    const chips = '<button class="chip' + (S.invoiceYear === "all" ? " on" : "") + '" type="button" data-action="chip-year" data-year="all">Tutti gli anni</button>' +
       years.map(function (y) {
         return '<button class="chip' + (S.invoiceYear === y ? " on" : "") + '" type="button" data-action="chip-year" data-year="' + y + '">' + y + "</button>";
       }).join("");
+    const kindChips = [["tutte", "Tutte"], ["fatture", "Fatture"], ["proforma", "Pro forma"]].map(function (pair) {
+      return '<button class="chip' + (kind === pair[0] ? " on" : "") + '" type="button" data-action="chip-kind" data-kind="' + pair[0] + '">' + pair[1] + "</button>";
+    }).join("");
+    const empty = kind === "proforma" ? "Nessuna pro forma in questo elenco." : kind === "fatture" ? "Nessuna fattura in questo elenco." : "Nessun documento in questo elenco.";
     return '<div class="top"><div><p class="kicker">Registro</p><h1>Fatture</h1></div><a class="btn small" href="#/fatture/nuova">Nuova</a></div>' +
       '<div class="chips">' + chips + "</div>" +
+      '<div class="chips">' + kindChips + "</div>" +
+      gapBanner() +
       '<input id="q" class="search" placeholder="Paziente o numero" value="' + esc(q) + '">' +
-      '<p id="list-total" class="muted" style="margin:10px 2px">Totale elenco ' + esc(Money.formatEuro(sumOf(list).totale)) + "</p>" +
-      '<div id="results" class="list">' + (list.length ? list.map(invoiceRow).join("") : '<div class="empty">Nessuna fattura in questo elenco.</div>') + "</div>";
+      '<p id="list-total" class="muted" style="margin:10px 2px">' + esc(listTotalText(list)) + "</p>" +
+      '<div id="results" class="list">' + (list.length ? list.map(invoiceRow).join("") : '<div class="empty">' + empty + "</div>") + "</div>";
+  }
+
+  function listTotalText(list) {
+    if (invoiceKind() === "proforma") return "Pro forma in elenco: " + list.length + ". Non entrano nel riepilogo fiscale.";
+    return "Totale fatture in elenco " + Money.formatEuro(sumOf(list.filter(isFiscal)).totale);
+  }
+
+  function gapBanner() {
+    if (S.invoiceYear === "all") return "";
+    const year = Number(S.invoiceYear);
+    const proforma = invoiceKind() === "proforma";
+    const missing = gapsWith(year, proforma, "", 0);
+    if (!missing.length) return "";
+    if (proforma) {
+      return '<div class="note-box">Nella numerazione pro forma del ' + year + " " + manca(missing) + ". Apri la pro forma e correggi il numero.</div>";
+    }
+    return '<div class="warn-box">Nella numerazione delle fatture ' + year + " " + manca(missing) + ". Apri la fattura con il numero sbagliato e cambialo: il nuovo numero deve restare libero.</div>";
   }
 
   function filteredInvoices(q) {
+    const kind = invoiceKind();
     return S.invoices.filter(function (i) {
       if (S.invoiceYear !== "all" && String(i.year) !== S.invoiceYear) return false;
-      return matches(i.patientName + " " + i.number + " " + i.description, q);
+      if (kind === "fatture" && !isFiscal(i)) return false;
+      if (kind === "proforma" && !isProforma(i)) return false;
+      return matches(i.patientName + " " + i.number + " " + i.description + (isProforma(i) ? " pro forma" : ""), q);
     }).sort(function (a, b) {
       if (a.date !== b.date) return a.date < b.date ? 1 : -1;
       return b.number - a.number;
@@ -333,8 +455,11 @@
   }
 
   function viewInvoice(inv) {
-    if (!inv) return missing("Fattura non trovata", "#/fatture");
+    if (!inv) return missing("Documento non trovato", "#/fatture");
+    const proforma = isProforma(inv);
     const p = patientById(inv.patientId);
+    const converted = proforma && inv.convertedInvoiceId ? S.invoices.find(function (i) { return i.id === inv.convertedInvoiceId; }) : null;
+    const origin = !proforma && inv.proformaId ? S.invoices.find(function (i) { return i.id === inv.proformaId; }) : null;
     const rows = [
       ["Competenze", inv.competenze],
       ["Cassa ENPAP 2%", inv.cassa],
@@ -344,7 +469,12 @@
       ["Marca da bollo", inv.bollo],
     ];
     return '<a class="back" href="#/fatture">Fatture</a>' +
-      '<div class="top"><div><p class="kicker">Fattura ' + inv.number + "/" + inv.year + "</p><h1>" + esc(inv.patientName) + "</h1></div></div>" +
+      '<div class="top"><div><p class="kicker">' + esc(docLabel(inv)) + "</p><h1>" + esc(inv.patientName) + "</h1></div></div>" +
+      (proforma ? '<div class="note-box">Non è una fattura: non occupa un numero fiscale e non entra nel riepilogo per il commercialista. Quando la prestazione è assolta, convertila.</div>' : "") +
+      (converted ? '<div class="note-box">Convertita nella fattura ' + converted.number + "/" + converted.year + '. <a href="#/fatture/' + esc(converted.id) + '">Apri la fattura</a></div>' : "") +
+      (proforma && inv.convertedInvoiceId && !converted ? '<div class="warn-box">Risultava convertita, ma quella fattura non è più in archivio. Puoi convertirla di nuovo.</div>' : "") +
+      (inv.proformaNumber ? '<div class="note-box">Emessa dalla pro forma n. ' + esc(inv.proformaNumber) + "/" + esc(inv.proformaYear) +
+        (origin ? '. <a href="#/fatture/' + esc(origin.id) + '">Apri la pro forma</a>' : "") + "</div>" : "") +
       '<div class="card"><div class="label">' + esc(Money.formatDateIT(inv.date)) + "</div>" +
       '<div class="figure">' + esc(Money.formatEuro(inv.totale)) + "</div>" +
       '<div class="sub">' + esc(inv.description || "") + "</div>" +
@@ -356,7 +486,8 @@
       (p ? '<p><a href="#/pazienti/' + esc(p.id) + '">Apri scheda paziente</a></p>' : "") +
       "</div>" +
       '<div class="stack" style="margin-top:12px">' +
-      '<button class="btn" type="button" data-action="share-invoice" data-id="' + esc(inv.id) + '">Invia PDF</button>' +
+      (proforma && !converted ? '<a class="btn" href="#/fatture/' + esc(inv.id) + '/converti">Converti in fattura</a>' : "") +
+      '<button class="btn' + (proforma && !converted ? " secondary" : "") + '" type="button" data-action="share-invoice" data-id="' + esc(inv.id) + '">Invia PDF</button>' +
       '<button class="btn secondary" type="button" data-action="pdf-invoice" data-id="' + esc(inv.id) + '">Scarica PDF</button>' +
       '<a class="btn secondary" href="#/fatture/' + esc(inv.id) + '/modifica">Modifica</a>' +
       '<button class="btn ghost" type="button" data-action="delete-invoice" data-id="' + esc(inv.id) + '">Elimina</button></div>';
@@ -368,22 +499,30 @@
     draftKey = key;
     if (existing) {
       draft = Object.assign({}, existing, {
+        kind: existing.kind === "proforma" ? "proforma" : "fattura",
+        numberInput: String(existing.number),
+        numberTouched: true,
         amountInput: Money.centsToInput(existing.calcMode === "competenze" ? existing.competenze : existing.totale),
         paid: !!existing.paymentDate,
       });
     } else {
       const patientId = q.get("paziente") || "";
+      const proforma = q.get("tipo") === "proforma";
+      const date = q.get("data") || Money.todayISO();
       const last = patientId ? lastInvoiceFor(patientId) : null;
       draft = {
         id: "",
+        kind: proforma ? "proforma" : "fattura",
+        numberInput: String(nextNumber(Number(date.slice(0, 4)), "", proforma)),
+        numberTouched: false,
         patientId: patientId,
-        date: q.get("data") || Money.todayISO(),
+        date: date,
         description: S.settings.descrizioneDefault || DESCRIZIONI[0],
         calcMode: "totale",
         amountInput: last ? Money.centsToInput(last.totale) : "",
         paymentMethod: last ? last.paymentMethod : "BANCOMAT",
-        paid: true,
-        paymentDate: q.get("data") || Money.todayISO(),
+        paid: !proforma,
+        paymentDate: date,
         notes: "",
         appointmentId: q.get("app") || "",
       };
@@ -419,8 +558,9 @@
   }
 
   function viewInvoiceForm(existing, q) {
-    if (existing === undefined) return missing("Fattura non trovata", "#/fatture");
+    if (existing === undefined) return missing("Documento non trovato", "#/fatture");
     const d = ensureDraft(existing, q);
+    const proforma = d.kind === "proforma";
     const options = sortedPatients().map(function (p) {
       return '<option value="' + esc(p.id) + '"' + (p.id === d.patientId ? " selected" : "") + ">" + esc(p.name) + "</option>";
     }).join("");
@@ -429,12 +569,21 @@
       return '<option' + (x === d.paymentMethod ? " selected" : "") + ">" + x + "</option>";
     }).join("");
     const year = Number((d.date || Money.todayISO()).slice(0, 4));
-    const previewN = d.number || nextNumber(year, d.id);
+    const previewN = String(d.numberInput || nextNumber(year, d.id, proforma)).trim() || "—";
+    const heading = d.id ? (proforma ? "Modifica pro forma" : "Modifica fattura") : (proforma ? "Nuova pro forma" : "Nuova fattura");
+    const kindSeg = d.id ? "" :
+      '<div class="seg"><button type="button" class="' + (proforma ? "" : "on") + '" data-action="seg-kind" data-kind="fattura">Fattura</button>' +
+      '<button type="button" class="' + (proforma ? "on" : "") + '" data-action="seg-kind" data-kind="proforma">Pro forma</button></div>';
     return '<a class="back" href="' + (d.id ? "#/fatture/" + esc(d.id) : "#/fatture") + '">Indietro</a>' +
-      '<div class="top"><div><p class="kicker">Numero ' + previewN + "/" + year + '</p><h1>' + (d.id ? "Modifica fattura" : "Nuova fattura") + "</h1></div></div>" +
+      kindSeg +
+      '<div class="top"><div><p class="kicker" id="doc-kicker">' + (proforma ? "Pro forma " : "Numero ") + esc(previewN) + "/" + year + "</p><h1>" + heading + "</h1></div></div>" +
+      (proforma && d.convertedInvoiceId ? '<div class="note-box">Già convertita nella fattura ' + esc(d.convertedNumber) + "/" + esc(d.convertedYear) + ". Le modifiche restano sulla pro forma e non cambiano la fattura.</div>" : "") +
+      (!proforma && d.proformaNumber ? '<div class="note-box">Questa fattura nasce dalla pro forma n. ' + esc(d.proformaNumber) + "/" + esc(d.proformaYear) + ".</div>" : "") +
+      '<div class="field"><label for="inv-number">Numero</label><input id="inv-number" inputmode="numeric" value="' + esc(d.numberInput || "") + '"></div>' +
+      '<div id="num-hint">' + numberHintHtml(year, d.numberInput, d.id, proforma) + "</div>" +
       '<div class="field"><label for="inv-patient">Paziente</label><select id="inv-patient">' +
       '<option value="">Scegli</option>' + options + "</select></div>" +
-      '<div class="field"><label for="inv-date">Data fattura</label><input id="inv-date" type="date" value="' + esc(d.date) + '"></div>' +
+      '<div class="field"><label for="inv-date">Data ' + (proforma ? "pro forma" : "fattura") + '</label><input id="inv-date" type="date" value="' + esc(d.date) + '"></div>' +
       '<div class="seg"><button type="button" class="' + (d.calcMode !== "competenze" ? "on" : "") + '" data-action="seg-mode" data-mode="totale">Parto dal totale</button>' +
       '<button type="button" class="' + (d.calcMode === "competenze" ? "on" : "") + '" data-action="seg-mode" data-mode="competenze">Parto dalle competenze</button></div>' +
       '<div class="field"><label for="amount">' + (d.calcMode === "competenze" ? "Competenze" : "Totale da pagare") + '</label>' +
@@ -445,8 +594,40 @@
       '<div class="field"><label for="inv-pay">Modalità</label><select id="inv-pay">' + payOpts + "</select></div>" +
       '<label class="check"><input id="inv-paid" type="checkbox"' + (d.paid ? " checked" : "") + "> Già incassata</label>" +
       '<div class="field"><label for="inv-paydate">Data di pagamento</label><input id="inv-paydate" type="date" value="' + esc(d.paymentDate || d.date) + '"></div>' +
-      '<div class="field"><label for="inv-notes">Note in fattura</label><textarea id="inv-notes">' + esc(d.notes || "") + "</textarea></div>" +
-      '<button class="btn" type="button" data-action="save-invoice">Salva fattura</button>';
+      '<div class="field"><label for="inv-notes">Note</label><textarea id="inv-notes">' + esc(d.notes || "") + "</textarea></div>" +
+      '<button class="btn" type="button" data-action="save-invoice">Salva ' + (proforma ? "pro forma" : "fattura") + "</button>";
+  }
+
+  function convertPreviewHtml(date) {
+    if (!date || date.length < 4) return '<div class="warn-box">Scegli la data della fattura.</div>';
+    const year = Number(date.slice(0, 4));
+    const n = nextNumber(year, "", false);
+    const missing = gapsWith(year, false, "", 0);
+    return '<div class="note-box">Diventerà la fattura <strong>n. ' + n + "/" + year + "</strong>." +
+      (missing.length ? " Nella sequenza " + manca(missing) + ". Se è un errore, correggi quel numero prima di convertire." : "") +
+      "</div>";
+  }
+
+  function viewConvert(inv) {
+    if (!inv) return missing("Pro forma non trovata", "#/fatture");
+    if (!isProforma(inv)) return missing("Solo una pro forma si converte in fattura.", "#/fatture/" + inv.id);
+    const linked = inv.convertedInvoiceId && S.invoices.find(function (i) { return i.id === inv.convertedInvoiceId; });
+    if (linked) {
+      return '<a class="back" href="#/fatture/' + esc(inv.id) + '">Pro forma</a>' +
+        '<div class="top"><div><p class="kicker">Già convertita</p><h1>Fattura ' + linked.number + "/" + linked.year + "</h1></div></div>" +
+        '<p>Questa pro forma è già diventata una fattura. Il numero fiscale non viene assegnato una seconda volta.</p>' +
+        '<a class="btn" href="#/fatture/' + esc(linked.id) + '">Apri la fattura</a>';
+    }
+    const date = Money.todayISO();
+    return '<a class="back" href="#/fatture/' + esc(inv.id) + '">Pro forma</a>' +
+      '<div class="top"><div><p class="kicker">Da pro forma ' + inv.number + "/" + inv.year + '</p><h1>Converti in fattura</h1></div></div>' +
+      '<div class="card"><div class="label">' + esc(inv.patientName) + "</div>" +
+      '<div class="figure">' + esc(Money.formatEuro(inv.totale)) + "</div>" +
+      '<div class="sub">' + esc(inv.description || "") + "</div></div>" +
+      '<div class="field"><label for="conv-date">Data della fattura</label><input id="conv-date" type="date" value="' + esc(date) + '"></div>' +
+      '<div id="conv-preview">' + convertPreviewHtml(date) + "</div>" +
+      '<p class="muted">Importi, prestazione e pagamento restano quelli della pro forma. La pro forma resta in archivio, segnata come convertita.</p>' +
+      '<button class="btn" type="button" data-action="convert-invoice" data-id="' + esc(inv.id) + '">Crea la fattura</button>';
   }
 
   function viewAgenda() {
@@ -481,13 +662,17 @@
   function viewAppointment(ap) {
     if (!ap) return missing("Appuntamento non trovato", "#/agenda");
     const inv = ap.invoiceId ? S.invoices.find(function (i) { return i.id === ap.invoiceId; }) : null;
+    const pf = ap.proformaId ? S.invoices.find(function (i) { return i.id === ap.proformaId; }) : null;
+    const newQuery = "paziente=" + encodeURIComponent(ap.patientId) + "&data=" + esc(ap.date) + "&app=" + encodeURIComponent(ap.id);
     return '<a class="back" href="#/agenda">Agenda</a>' +
       '<div class="top"><div><p class="kicker">' + esc(Money.formatDateIT(ap.date)) + (ap.time ? " · " + esc(ap.time) : "") + "</p><h1>" + esc(ap.patientName) + "</h1></div></div>" +
       '<div class="card">' + (ap.notes ? "<p>" + esc(ap.notes) + "</p>" : "<p class=\"muted\">Nessuna nota.</p>") +
-      '<span class="badge ' + (ap.invoiced ? "ok" : "neutral") + '">' + (ap.invoiced ? "Fatturato" : "Da fatturare") + "</span></div>" +
+      '<span class="badge ' + (inv ? "ok" : pf ? "pf" : "neutral") + '">' + (inv ? "Fatturato" : pf ? "Pro forma" : "Da fatturare") + "</span></div>" +
       '<div class="stack" style="margin-top:12px">' +
       (inv ? '<a class="btn" href="#/fatture/' + esc(inv.id) + '">Apri fattura ' + inv.number + "/" + inv.year + "</a>" :
-        '<a class="btn" href="#/fatture/nuova?paziente=' + encodeURIComponent(ap.patientId) + "&data=" + esc(ap.date) + "&app=" + encodeURIComponent(ap.id) + '">Crea fattura</a>') +
+        '<a class="btn" href="#/fatture/nuova?' + newQuery + '">Crea fattura</a>') +
+      (pf ? '<a class="btn secondary" href="#/fatture/' + esc(pf.id) + '">Apri pro forma ' + pf.number + "/" + pf.year + "</a>" :
+        (!inv ? '<a class="btn secondary" href="#/fatture/nuova?tipo=proforma&' + newQuery + '">Crea pro forma</a>' : "")) +
       '<a class="btn secondary" href="#/agenda/nuovo?id=' + encodeURIComponent(ap.id) + '">Modifica</a>' +
       '<button class="btn ghost" type="button" data-action="delete-appointment" data-id="' + esc(ap.id) + '">Elimina</button></div>';
   }
@@ -516,7 +701,7 @@
   }
 
   function exportSelection() {
-    return S.invoices.filter(function (i) { return inRange(i, S.exportFrom, S.exportTo); })
+    return S.invoices.filter(function (i) { return isFiscal(i) && inRange(i, S.exportFrom, S.exportTo); })
       .sort(function (a, b) {
         if (a.date !== b.date) return a.date < b.date ? -1 : 1;
         return a.number - b.number;
@@ -566,7 +751,7 @@
       '<button class="btn secondary" type="button" data-action="make-pdf-summary">Scarica PDF</button></div>' +
       '<div class="section-title"><h2>Nel periodo</h2></div>' +
       (list.length ? '<div class="list">' + list.map(invoiceRow).join("") + "</div>" : '<div class="empty">Nessuna fattura in queste date.</div>') +
-      '<p class="muted">Il riepilogo ha le stesse colonne del foglio, più il codice fiscale del paziente. Il PDF delle fatture mette una fattura per pagina.</p>';
+      '<p class="muted">Il riepilogo ha le stesse colonne del foglio, più il codice fiscale del paziente. Il PDF delle fatture mette una fattura per pagina. Le pro forma non sono incluse: entrano solo dopo la conversione in fattura.</p>';
   }
 
   function viewAltro() {
@@ -641,7 +826,8 @@
       "<li>Sull'iPad o sull'iPhone, in <strong>Altro</strong>, tocca <strong>Importa archivio</strong> e scegli quel file.</li>" +
       "<li>Per mandare il riepilogo: Esporta, scegli le date, poi <strong>Invia per email</strong>.</li>" +
       "</ol>" +
-      "<p>I pazienti restano solo su questo dispositivo. Il PDF della singola fattura riporta albo, partita IVA, codice fiscale, studio, domicilio, prestazione, cassa ENPAP e bollo. Non sostituisce l'invio della fattura elettronica al Sistema di Interscambio, se è dovuto.</p></div>";
+      "<p>I pazienti restano solo su questo dispositivo. Il PDF della singola fattura riporta albo, partita IVA, codice fiscale, studio, domicilio, prestazione, cassa ENPAP e bollo. Non sostituisce l'invio della fattura elettronica al Sistema di Interscambio, se è dovuto.</p>" +
+      "<p>Una pro forma non è una fattura: ha una numerazione propria e non entra nel riepilogo. Quando la prestazione è assolta, aprila e tocca <strong>Converti in fattura</strong>: riceve il primo numero fiscale libero. Se un numero di fattura è sbagliato, aprila in modifica e cambialo. Il numero deve restare unico nell'anno; se la sequenza resta bucata, l'app lo segnala.</p></div>";
   }
 
   function field(label, id, value, type) {
@@ -662,6 +848,8 @@
     draft.paid = document.getElementById("inv-paid").checked;
     draft.paymentDate = document.getElementById("inv-paydate").value;
     draft.notes = document.getElementById("inv-notes").value;
+    const num = document.getElementById("inv-number");
+    if (num) draft.numberInput = num.value;
   }
 
   function readExportInputs() {
@@ -682,6 +870,19 @@
     const action = btn.dataset.action;
     if (action === "chip-year") {
       S.invoiceYear = btn.dataset.year;
+      render();
+    } else if (action === "chip-kind") {
+      S.invoiceKind = btn.dataset.kind;
+      if ((location.hash || "").indexOf("?") !== -1) location.hash = "#/fatture";
+      else render();
+    } else if (action === "seg-kind") {
+      if (!draft || draft.id) return;
+      draft.kind = btn.dataset.kind === "proforma" ? "proforma" : "fattura";
+      if (!draft.numberTouched) {
+        const year = Number((draft.date || Money.todayISO()).slice(0, 4));
+        draft.numberInput = String(nextNumber(year, "", draft.kind === "proforma"));
+      }
+      draft.paid = draft.kind !== "proforma";
       render();
     } else if (action === "seg-mode") {
       draft.calcMode = btn.dataset.mode;
@@ -705,6 +906,8 @@
       render();
     } else if (action === "save-invoice") {
       await saveInvoice();
+    } else if (action === "convert-invoice") {
+      await convertProforma(btn.dataset.id);
     } else if (action === "delete-invoice") {
       await deleteInvoice(btn.dataset.id);
     } else if (action === "pdf-invoice" || action === "share-invoice") {
@@ -757,14 +960,68 @@
           return matches(p.name + " " + p.cf + " " + p.phone, S.query);
         });
         box.innerHTML = patientResults(list);
-      } else if (parts[0] === "fatture") {
+      }       else if (parts[0] === "fatture") {
         const list = filteredInvoices(S.query);
-        box.innerHTML = list.length ? list.map(invoiceRow).join("") : '<div class="empty">Nessuna fattura in questo elenco.</div>';
+        const kind = invoiceKind();
+        const empty = kind === "proforma" ? "Nessuna pro forma in questo elenco." : kind === "fatture" ? "Nessuna fattura in questo elenco." : "Nessun documento in questo elenco.";
+        box.innerHTML = list.length ? list.map(invoiceRow).join("") : '<div class="empty">' + empty + "</div>";
         const total = document.getElementById("list-total");
-        if (total) total.textContent = "Totale elenco " + Money.formatEuro(sumOf(list).totale);
+        if (total) total.textContent = listTotalText(list);
       }
     }
+    if (e.target.id === "inv-number" && draft) {
+      draft.numberInput = e.target.value;
+      draft.numberTouched = true;
+      const year = Number((draft.date || Money.todayISO()).slice(0, 4));
+      const hint = document.getElementById("num-hint");
+      if (hint) hint.innerHTML = numberHintHtml(year, draft.numberInput, draft.id, draft.kind === "proforma");
+      const kick = document.getElementById("doc-kicker");
+      if (kick) {
+        const n = /^\d+$/.test(String(draft.numberInput).trim()) ? String(draft.numberInput).trim() : "—";
+        kick.textContent = (draft.kind === "proforma" ? "Pro forma " : "Numero ") + n + "/" + year;
+      }
     }
+    if (e.target.id === "conv-date") {
+      const box = document.getElementById("conv-preview");
+      if (box) box.innerHTML = convertPreviewHtml(e.target.value);
+    }
+    }
+
+  async function syncDocumentLinks(inv, previousId) {
+    const fromId = previousId || inv.id;
+    for (const ap of S.appointments) {
+      let changed = false;
+      if (isProforma(inv)) {
+        if (ap.proformaId === fromId || (inv.appointmentId && ap.id === inv.appointmentId)) {
+          ap.proformaId = inv.id;
+          changed = true;
+        }
+      } else if (ap.invoiceId === fromId || (inv.appointmentId && ap.id === inv.appointmentId)) {
+        ap.invoiceId = inv.id;
+        ap.invoiced = true;
+        changed = true;
+      }
+      if (changed) await DB.put("appointments", ap);
+    }
+    for (const other of S.invoices) {
+      if (other.id === fromId || other.id === inv.id) continue;
+      let changed = false;
+      if (other.convertedInvoiceId === fromId) {
+        other.convertedInvoiceId = inv.id;
+        other.convertedNumber = inv.number;
+        other.convertedYear = inv.year;
+        changed = true;
+      }
+      if (other.proformaId === fromId) {
+        other.proformaId = inv.id;
+        other.proformaNumber = inv.number;
+        other.proformaYear = inv.year;
+        other.proformaDate = inv.date;
+        changed = true;
+      }
+      if (changed) await DB.put("invoices", other);
+    }
+  }
 
   async function saveInvoice() {
     const patient = patientById(draft.patientId);
@@ -774,15 +1031,22 @@
     const calc = draft.calcMode === "competenze" ? Money.fromCompetenze(cents) : Money.fromTotale(cents);
     if (calc.grey) return toast("Importo non compatibile con il bollo.");
     if (!draft.date) return toast("Inserisci la data.");
+    const proforma = draft.kind === "proforma";
     const year = Number(draft.date.slice(0, 4));
-    let id = draft.id;
-    let number = draft.number;
-    if (!id || draft.year !== year) {
-      number = nextNumber(year, id);
-      id = year + "-" + number;
+    const raw = String(draft.numberInput || "").trim();
+    if (!/^\d+$/.test(raw)) return toast("Il numero deve essere un intero.");
+    const number = Number(raw);
+    if (number < 1 || number > 9999) return toast("Il numero deve essere tra 1 e 9999.");
+    if (numberTaken(year, number, draft.id, proforma)) return toast("Il n. " + number + "/" + year + " è già usato.");
+    const missing = gapsWith(year, proforma, draft.id, number);
+    if (!proforma && missing.length) {
+      if (!confirm("Con il n. " + number + " la sequenza " + year + " " + lasciaScoperto(missing) + ". Salvare lo stesso?")) return;
     }
+    const id = docId(year, number, proforma);
+    const prev = draft.id ? S.invoices.find(function (i) { return i.id === draft.id; }) : null;
     const inv = {
       id: id,
+      kind: proforma ? "proforma" : "fattura",
       year: year,
       number: number,
       date: draft.date,
@@ -800,37 +1064,115 @@
       paymentDate: draft.paid ? (draft.paymentDate || draft.date) : "",
       notes: (draft.notes || "").trim(),
       calcMode: draft.calcMode,
+      appointmentId: (prev && prev.appointmentId) || draft.appointmentId || "",
+      proformaId: (prev && prev.proformaId) || "",
+      proformaNumber: (prev && prev.proformaNumber) || "",
+      proformaYear: (prev && prev.proformaYear) || "",
+      proformaDate: (prev && prev.proformaDate) || "",
+      convertedInvoiceId: (prev && prev.convertedInvoiceId) || "",
+      convertedNumber: (prev && prev.convertedNumber) || "",
+      convertedYear: (prev && prev.convertedYear) || "",
     };
-    if (draft.id && draft.id !== inv.id) await DB.del("invoices", draft.id);
     await DB.put("invoices", inv);
-    if (draft.appointmentId) {
-      const ap = S.appointments.find(function (a) { return a.id === draft.appointmentId; });
-      if (ap) {
-        ap.invoiced = true;
-        ap.invoiceId = inv.id;
-        await DB.put("appointments", ap);
-      }
-    }
+    if (draft.id && draft.id !== inv.id) await DB.del("invoices", draft.id);
+    await syncDocumentLinks(inv, draft.id || inv.id);
     draft = null;
     await reload();
-    toast("Fattura salvata");
+    toast(proforma ? "Pro forma salvata" : "Fattura salvata");
+    location.hash = "#/fatture/" + inv.id;
+  }
+
+  async function convertProforma(id) {
+    const pf = S.invoices.find(function (i) { return i.id === id; });
+    if (!pf || !isProforma(pf)) return toast("Pro forma non trovata.");
+    const linked = pf.convertedInvoiceId && S.invoices.find(function (i) { return i.id === pf.convertedInvoiceId; });
+    if (linked) return toast("È già la fattura " + linked.number + "/" + linked.year + ".");
+    const dateEl = document.getElementById("conv-date");
+    const date = dateEl ? dateEl.value : "";
+    if (!date) return toast("Scegli la data della fattura.");
+    const year = Number(date.slice(0, 4));
+    const number = nextNumber(year, "", false);
+    const missing = gapsWith(year, false, "", 0);
+    let msg = "Creare la fattura n. " + number + "/" + year + " del " + Money.formatDateIT(date) + "?";
+    if (missing.length) msg += "\n\nNella sequenza " + manca(missing) + ".";
+    if (!confirm(msg)) return;
+    const inv = {
+      id: docId(year, number, false),
+      kind: "fattura",
+      year: year,
+      number: number,
+      date: date,
+      patientId: pf.patientId,
+      patientName: pf.patientName,
+      description: pf.description,
+      competenze: pf.competenze,
+      cassa: pf.cassa,
+      imponibile: pf.imponibile,
+      iva: pf.iva,
+      totaleDocumento: pf.totaleDocumento,
+      bollo: pf.bollo,
+      totale: pf.totale,
+      paymentMethod: pf.paymentMethod,
+      paymentDate: pf.paymentDate || "",
+      notes: pf.notes || "",
+      calcMode: pf.calcMode || "totale",
+      appointmentId: pf.appointmentId || "",
+      proformaId: pf.id,
+      proformaNumber: pf.number,
+      proformaYear: pf.year,
+      proformaDate: pf.date,
+    };
+    await DB.put("invoices", inv);
+    pf.convertedInvoiceId = inv.id;
+    pf.convertedNumber = number;
+    pf.convertedYear = year;
+    await DB.put("invoices", pf);
+    await syncDocumentLinks(inv, inv.id);
+    await reload();
+    toast("Fattura " + number + "/" + year + " creata");
     location.hash = "#/fatture/" + inv.id;
   }
 
   async function deleteInvoice(id) {
     const inv = S.invoices.find(function (i) { return i.id === id; });
     if (!inv) return;
-    if (!confirm("Eliminare la fattura " + inv.number + "/" + inv.year + "?")) return;
+    const proforma = isProforma(inv);
+    let extra = "";
+    if (proforma && inv.convertedInvoiceId) extra = " La fattura già emessa resta in archivio.";
+    if (!proforma && inv.proformaNumber) extra = " La pro forma torna disponibile e si può convertire di nuovo.";
+    if (!confirm("Eliminare " + docLabel(inv) + "?" + extra)) return;
     await DB.del("invoices", id);
     for (const ap of S.appointments) {
+      let changed = false;
       if (ap.invoiceId === id) {
         ap.invoiceId = "";
         ap.invoiced = false;
-        await DB.put("appointments", ap);
+        changed = true;
+      }
+      if (ap.proformaId === id) {
+        ap.proformaId = "";
+        changed = true;
+      }
+      if (changed) await DB.put("appointments", ap);
+    }
+    if (!proforma) {
+      for (const other of S.invoices) {
+        if (other.convertedInvoiceId === id) {
+          other.convertedInvoiceId = "";
+          other.convertedNumber = "";
+          other.convertedYear = "";
+          await DB.put("invoices", other);
+        }
+      }
+    } else if (inv.convertedInvoiceId) {
+      const fiscal = S.invoices.find(function (i) { return i.id === inv.convertedInvoiceId; });
+      if (fiscal) {
+        fiscal.proformaId = "";
+        await DB.put("invoices", fiscal);
       }
     }
     await reload();
-    toast("Fattura eliminata");
+    toast(proforma ? "Pro forma eliminata" : "Fattura eliminata");
     location.hash = "#/fatture";
   }
 
@@ -839,13 +1181,14 @@
     if (!inv) return;
     const patient = patientById(inv.patientId) || { name: inv.patientName };
     const blob = await Pdf.invoicePdf(inv, patient, S.settings);
-    const name = "Fattura_" + inv.number + "_" + inv.year + "_" + fileSafe(inv.patientName) + ".pdf";
+    const proforma = isProforma(inv);
+    const name = (proforma ? "Proforma_" : "Fattura_") + inv.number + "_" + inv.year + "_" + fileSafe(inv.patientName) + ".pdf";
     if (!share) {
       downloadBlob(blob, name);
       toast("PDF pronto");
       return;
     }
-    const text = "Fattura n. " + inv.number + "/" + inv.year + " del " + Money.formatDateIT(inv.date) + " — " + Money.formatEuro(inv.totale);
+    const text = (proforma ? "Pro forma n. " : "Fattura n. ") + inv.number + "/" + inv.year + " del " + Money.formatDateIT(inv.date) + " — " + Money.formatEuro(inv.totale);
     try {
       const how = await shareOrDownload([{ blob: blob, name: name }], text);
       toast(how === "shared" ? "Scegli Mail nel foglio di condivisione" : "PDF scaricato: allevalo alla mail");
@@ -915,6 +1258,7 @@
       notes: document.getElementById("a-notes").value.trim(),
       invoiced: document.getElementById("a-invoiced").checked || !!(prev && prev.invoiceId),
       invoiceId: prev ? prev.invoiceId || "" : "",
+      proformaId: prev ? prev.proformaId || "" : "",
     };
     await DB.put("appointments", ap);
     await reload();
@@ -1085,6 +1429,14 @@
     }
     if (e.target.id === "inv-patient" && draft) {
       captureDraftFromDom();
+      render();
+    }
+    if (e.target.id === "inv-date" && draft) {
+      captureDraftFromDom();
+      if (!draft.numberTouched) {
+        const year = Number((draft.date || Money.todayISO()).slice(0, 4));
+        draft.numberInput = String(nextNumber(year, draft.id, draft.kind === "proforma"));
+      }
       render();
     }
   });

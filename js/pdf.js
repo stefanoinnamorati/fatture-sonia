@@ -30,12 +30,15 @@
   }
 
   function bolloText(inv, settings) {
+    const proforma = inv.kind === "proforma";
     if ((inv.bollo || 0) > 0) {
+      if (proforma) return "In fattura, se l'importo resta superiore a € 77,47, andrà assolta l'imposta di bollo di € 2,00.";
       if (settings.bolloMode === "virtuale") {
         return "Imposta di bollo assolta in modo virtuale ai sensi dell'art. 15 del D.P.R. 642/1972, per € 2,00.";
       }
       return "Imposta di bollo da € 2,00 assolta sull'originale ai sensi del D.P.R. 26 ottobre 1972, n. 642 (importo superiore a € 77,47).";
     }
+    if (proforma) return "In fattura l'imposta di bollo non è dovuta se l'importo del documento non supera € 77,47.";
     return "Imposta di bollo non dovuta: importo del documento non superiore a € 77,47.";
   }
 
@@ -45,6 +48,7 @@
   }
 
   function drawInvoice(doc, inv, patient, settings, logo, page, pages) {
+    const proforma = inv.kind === "proforma";
     const pageW = 210;
     const left = 16;
     const right = pageW - 16;
@@ -86,12 +90,17 @@
     doc.setTextColor(15, 95, 87);
     doc.setFont("times", "bold");
     doc.setFontSize(18);
-    doc.text("FATTURA", right, 18, { align: "right" });
+    doc.text(proforma ? "PRO FORMA" : "FATTURA", right, 18, { align: "right" });
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
     doc.setTextColor(28, 25, 21);
     doc.text("n. " + inv.number + "/" + inv.year, right, 25, { align: "right" });
     doc.text("del " + Money.formatDateIT(inv.date), right, 30, { align: "right" });
+    if (proforma) {
+      doc.setFontSize(8);
+      doc.setTextColor(185, 74, 66);
+      doc.text("Documento non fiscale", right, 35.5, { align: "right" });
+    }
 
     y = Math.max(y + 10, 62);
     doc.setFillColor(247, 244, 238);
@@ -172,14 +181,19 @@
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
     doc.setTextColor(28, 25, 21);
-    doc.text("Pagamento", left, y);
+    doc.text(proforma ? "Pagamento previsto" : "Pagamento", left, y);
     doc.setFont("helvetica", "normal");
     y += 5;
     doc.text("Modalità: " + (inv.paymentMethod || "—"), left, y);
     y += 5;
     if (inv.paymentDate) doc.text("Data di pagamento: " + Money.formatDateIT(inv.paymentDate), left, y);
-    else doc.text("Da incassare", left, y);
+    else doc.text(proforma ? "Non ancora fatturata" : "Da incassare", left, y);
     y += 5;
+    if (!proforma && inv.proformaNumber) {
+      doc.text("Emessa in conversione della pro forma n. " + inv.proformaNumber + "/" + inv.proformaYear +
+        (inv.proformaDate ? " del " + Money.formatDateIT(inv.proformaDate) : "") + ".", left, y);
+      y += 5;
+    }
     if ((inv.paymentMethod || "").toUpperCase() === "BONIFICO" && settings.iban) {
       doc.text("IBAN " + settings.iban, left, y);
       y += 5;
@@ -193,13 +207,17 @@
       y += noteLines.length * 4.5;
     }
 
-    const legal = [
-      regimeText(settings),
-      enpapLine(settings),
-      bolloText(inv, settings),
-      "Documento emesso da " + (settings.titolo ? settings.titolo + " " : "") + settings.nome +
-        (settings.numeroAlbo ? ", iscritta all'Albo degli Psicologi n. " + settings.numeroAlbo : "") + ".",
-    ].join(" ");
+    const issuer = "Documento emesso da " + (settings.titolo ? settings.titolo + " " : "") + settings.nome +
+      (settings.numeroAlbo ? ", iscritta all'Albo degli Psicologi n. " + settings.numeroAlbo : "") + ".";
+    const legal = (proforma
+      ? [
+          "Documento pro forma, privo di valore fiscale: non è una fattura e non sostituisce il documento da emettere a prestazione assolta.",
+          "Condizioni previste in fattura: " + regimeText(settings),
+          enpapLine(settings),
+          bolloText(inv, settings),
+        ]
+      : [regimeText(settings), enpapLine(settings), bolloText(inv, settings), issuer]
+    ).join(" ");
     const legalLines = doc.splitTextToSize(legal, right - left - 6);
     const boxH = legalLines.length * 3.7 + 6;
     const boxY = Math.min(y + 6, 272 - boxH);
@@ -219,9 +237,9 @@
     const doc = new jsPDF({ unit: "mm", format: "a4" });
     const logo = await loadLogo();
     doc.setProperties({
-      title: "Fattura " + inv.number + "/" + inv.year,
+      title: (inv.kind === "proforma" ? "Pro forma " : "Fattura ") + inv.number + "/" + inv.year,
       author: (settings.titolo ? settings.titolo + " " : "") + settings.nome,
-      subject: "Fattura per prestazione sanitaria",
+      subject: inv.kind === "proforma" ? "Pro forma, documento non fiscale" : "Fattura per prestazione sanitaria",
     });
     drawInvoice(doc, inv, patient, settings, logo, 1, 1);
     return doc.output("blob");

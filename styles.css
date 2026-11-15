@@ -135,6 +135,8 @@ h2 {
 .badge.ok { background: var(--good-bg); color: var(--good); }
 .badge.wait { background: var(--warn-bg); color: var(--warn); }
 .badge.neutral { background: #eeeae3; color: var(--muted); }
+.badge.pf { background: #efe6f7; color: #5c3d86; }
+.avatar.pf { background: #efe6f7; color: #5c3d86; font-size: 13px; }
 
 .chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 12px; }
 .chip {
