@@ -35,7 +35,7 @@ a { color: var(--teal); text-decoration: none; }
 #app {
   max-width: 760px;
   margin: 0 auto;
-  padding: calc(14px + env(safe-area-inset-top)) 16px calc(var(--nav) + 18px);
+  padding: calc(28px + env(safe-area-inset-top)) 16px calc(var(--nav) + 18px);
 }
 
 .top {
@@ -46,7 +46,7 @@ a { color: var(--teal); text-decoration: none; }
   margin-bottom: 16px;
 }
 .kicker {
-  margin: 0 0 2px;
+  margin: 0 0 6px;
   font-size: 12px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -71,7 +71,7 @@ h2 {
   gap: 4px;
   color: var(--muted);
   font-size: 14px;
-  margin-bottom: 6px;
+  margin: 6px 0 14px;
 }
 
 .grid-2 {
@@ -137,6 +137,7 @@ h2 {
 .badge.neutral { background: #eeeae3; color: var(--muted); }
 .badge.pf { background: #efe6f7; color: #5c3d86; }
 .avatar.pf { background: #efe6f7; color: #5c3d86; font-size: 13px; }
+.avatar.bday { background: #f6e7f0; color: #8a3d6b; font-size: 13px; }
 
 .chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 12px; }
 .chip {
@@ -159,7 +160,42 @@ h2 {
   border-color: var(--teal);
   box-shadow: 0 0 0 3px rgba(15, 95, 87, 0.12);
 }
-.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.field input[type="date"],
+.field input[type="time"] {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+@supports (font: -apple-system-body) and (-webkit-touch-callout: none) {
+  .field input[type="date"],
+  .field input[type="time"] {
+    display: flex;
+    align-items: center;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .field input::-webkit-datetime-edit,
+  .field input::-webkit-datetime-edit-fields-wrapper,
+  .field input::-webkit-datetime-edit-text,
+  .field input::-webkit-datetime-edit-day-field,
+  .field input::-webkit-datetime-edit-month-field,
+  .field input::-webkit-datetime-edit-year-field,
+  .field input::-webkit-datetime-edit-hour-field,
+  .field input::-webkit-datetime-edit-minute-field,
+  .field input::-webkit-datetime-edit-meridiem-field {
+    padding: 0;
+  }
+  .field input::-webkit-date-and-time-value {
+    text-align: left;
+    min-width: 0;
+    min-height: 1.2em;
+  }
+  .field input::-webkit-calendar-picker-indicator {
+    margin: 0 0 0 auto;
+    padding: 0;
+  }
+}
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; min-width: 0; }
 .field label { font-size: 13px; color: var(--muted); }
 .inline { display: flex; gap: 8px; }
 .inline > * { flex: 1; }
@@ -232,6 +268,15 @@ h2 {
   background: var(--coral); bottom: 5px; left: 50%; transform: translateX(-50%);
 }
 .days button.on.has::after { background: white; }
+.days button.bday::before {
+  content: ""; position: absolute; width: 5px; height: 5px; border-radius: 50%;
+  background: #8a3d6b; bottom: 5px; left: 50%; transform: translateX(-50%);
+}
+.days button.has.bday::before { left: calc(50% - 6px); transform: none; }
+.days button.has.bday::after { left: calc(50% + 1px); transform: none; }
+.days button.on.bday::before { background: white; }
+.logo-edit { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.logo-edit .stack { flex: 1; }
 
 #tabbar {
   position: fixed; left: 0; right: 0; bottom: 0;

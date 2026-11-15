@@ -37,10 +37,19 @@
     });
   }
 
+  function pathId(id) {
+    return encodeURIComponent(id || "");
+  }
+
+  function readPart(part) {
+    try { return decodeURIComponent(part); }
+    catch (e) { return part; }
+  }
+
   function route() {
     const raw = (location.hash || "#/").replace(/^#/, "");
     const bits = raw.split("?");
-    return { parts: bits[0].split("/").filter(Boolean), q: new URLSearchParams(bits[1] || "") };
+    return { parts: bits[0].split("/").filter(Boolean).map(readPart), q: new URLSearchParams(bits[1] || "") };
   }
 
   function toast(msg) {
@@ -225,6 +234,39 @@
     S.files = await DB.all("files");
     S.appointments = await DB.all("appointments");
     S.settings = (await DB.getMeta("settings")) || Object.assign({}, window.activeSeed().professional);
+    await canonArchive();
+  }
+
+  async function canonArchive() {
+    const writes = [];
+    S.patients.forEach(function (p) {
+      const name = Money.nameUpper(p.name);
+      const cf = Money.cfCanon(p.cf);
+      if (name !== (p.name || "") || cf !== (p.cf || "")) {
+        p.name = name;
+        p.cf = cf;
+        writes.push(["patients", p]);
+      }
+    });
+    S.invoices.forEach(function (inv) {
+      const name = Money.nameUpper(inv.patientName);
+      if (name && name !== inv.patientName) {
+        inv.patientName = name;
+        writes.push(["invoices", inv]);
+      }
+    });
+    S.appointments.forEach(function (ap) {
+      const name = Money.nameUpper(ap.patientName);
+      if (name && name !== ap.patientName) {
+        ap.patientName = name;
+        writes.push(["appointments", ap]);
+      }
+    });
+    if (!writes.length) return;
+    await DB.runQuiet(async function () {
+      for (const pair of writes) await DB.put(pair[0], pair[1]);
+    });
+    if (window.Sync) Sync.noteLocalChange();
   }
 
   function fileById(id) {
@@ -294,17 +336,70 @@
     tab.querySelectorAll("a").forEach(function (a) {
       a.classList.toggle("on", a.dataset.tab === tabName);
     });
+    const who = (S.settings.studioNome || S.settings.nome || "Fatture").trim();
+    document.title = "Fatture · " + who;
     app.innerHTML = screen();
+  }
+
+  function logoSrc() {
+    return (S.settings && S.settings.logoData) || "assets/logo.png?v=3";
   }
 
   function brandBlock(kicker) {
     const s = S.settings || {};
-    const nome = s.nome || "Sonia Zaffarano";
-    const ruolo = [s.titolo, s.qualifica].filter(Boolean).join(" · ");
-    return '<header class="brand"><img class="brand-logo" src="assets/logo.png?v=3" alt="Logo di ' + esc(nome) + '">' +
+    const nome = s.nome || "Studio";
+    const ruolo = [s.studioNome, s.titolo, s.qualifica].filter(Boolean).join(" · ");
+    return '<header class="brand"><img class="brand-logo" src="' + logoSrc() + '" alt="Logo di ' + esc(nome) + '">' +
       '<div><p class="kicker">' + esc(kicker || "Studio") + "</p><h1>" + esc(nome) + "</h1>" +
       (ruolo ? '<p class="brand-role">' + esc(ruolo) + "</p>" : "") +
       "</div></header>";
+  }
+
+  function ageLabel(age) {
+    if (age == null || age < 0) return "";
+    return age === 1 ? "1 anno" : age + " anni";
+  }
+
+  function birthFieldsHtml(cf) {
+    const info = Money.cfDecode(cf);
+    if (!info) return "";
+    const place = info.place ? esc(info.place) + (info.foreign ? " · stato estero" : "") : "Codice " + esc(info.code);
+    return '<div class="meta" style="margin-top:8px">Data di nascita</div><div>' + esc(Money.formatDateIT(info.date)) + "</div>" +
+      '<div class="meta" style="margin-top:8px">Luogo di nascita</div><div>' + place + "</div>" +
+      '<div class="meta" style="margin-top:8px">Età</div><div>' + esc(ageLabel(Money.ageYears(info.date))) + "</div>";
+  }
+
+  function birthNoteHtml(cf) {
+    const raw = String(cf || "").trim();
+    if (!raw) return '<p class="muted" id="cf-born-text">Dal codice fiscale compaiono data di nascita, luogo ed età.</p>';
+    if (!Money.cfValid(raw)) return '<div class="warn-box">Il codice fiscale non torna: data, luogo ed età restano vuoti.</div>';
+    const info = Money.cfDecode(raw);
+    if (!info) return "";
+    const who = info.sex === "F" ? "Nata" : "Nato";
+    const place = info.place ? esc(info.place) + (info.foreign ? ", stato estero" : "") : "codice " + esc(info.code);
+    return '<div class="note-box">' + who + " il " + esc(Money.formatDateIT(info.date)) + " · " + place + ". Età oggi: <strong>" + esc(ageLabel(Money.ageYears(info.date))) + "</strong>.</div>";
+  }
+
+  function birthdaysOn(iso) {
+    const year = Number(String(iso || "").slice(0, 4));
+    const list = [];
+    S.patients.forEach(function (p) {
+      const info = Money.cfDecode(p.cf);
+      if (!info) return;
+      const when = Money.birthdayOn(info.date, year);
+      if (when.date !== iso) return;
+      list.push({ patient: p, info: info, age: Money.ageYears(info.date, iso), shifted: when.shifted });
+    });
+    list.sort(function (a, b) { return a.patient.name.localeCompare(b.patient.name, "it"); });
+    return list;
+  }
+
+  function birthdayRow(item) {
+    const p = item.patient;
+    const nato = item.info.sex === "F" ? "nata" : "nato";
+    const extra = item.shifted ? " · " + nato + " il 29 febbraio" : "";
+    return '<a class="row" href="#/pazienti/' + pathId(p.id) + '"><div class="avatar bday">' + esc(item.info.date.slice(8)) + '</div><div class="main">' +
+      '<div class="name">' + esc(p.name) + '</div><div class="meta">Compleanno · compie ' + esc(ageLabel(item.age)) + extra + "</div></div></a>";
   }
 
   function viewLock() {
@@ -336,6 +431,10 @@
       '<div class="stack" style="margin-top:14px"><a class="btn" href="#/fatture/nuova">Nuova fattura</a>' +
       '<a class="btn secondary" href="#/fatture/nuova?tipo=proforma">Nuova pro forma</a>' +
       '<a class="btn secondary" href="#/agenda/nuovo">Nuovo appuntamento</a></div>' +
+      (function () {
+        const todayBirth = birthdaysOn(today);
+        return todayBirth.length ? '<div class="section-title"><h2>Compleanni</h2></div><div class="list">' + todayBirth.map(birthdayRow).join("") + "</div>" : "";
+      })() +
       (openPf.length ? '<div class="note-box">' + openPf.length + ' pro forma ' + (openPf.length === 1 ? "aperta" : "aperte") + '. <a href="#/fatture?tipo=proforma">Apri l\'elenco</a></div>' : "") +
       (function () {
         const due = S.invoices.filter(function (i) { return bolloDue(i) && !bolloArchived(i); }).length;
@@ -353,7 +452,7 @@
     const badge = proforma
       ? (inv.convertedInvoiceId ? '<span class="badge ok">Convertita</span>' : '<span class="badge pf">Pro forma</span>')
       : '<span class="badge ' + (paid ? "ok" : "wait") + '">' + (paid ? "Incassata" : "Da incassare") + "</span>";
-    return '<a class="row" href="#/fatture/' + esc(inv.id) + '"><div class="avatar' + (proforma ? " pf" : "") + '">' + (proforma ? "PF" : inv.number) + "</div><div class=\"main\">" +
+    return '<a class="row" href="#/fatture/' + pathId(inv.id) + '"><div class="avatar' + (proforma ? " pf" : "") + '">' + (proforma ? "PF" : inv.number) + "</div><div class=\"main\">" +
       '<div class="name">' + esc(inv.patientName) + "</div>" +
       '<div class="meta">' + (proforma ? "Pro forma n. " : "n. ") + inv.number + "/" + inv.year + " · " + esc(Money.formatDateIT(inv.date)) + " · " + esc(inv.paymentMethod || "—") +
       (bolloDue(inv) ? (bolloArchived(inv) ? " · bollo archiviato" : " · bollo da archiviare") : "") + "</div></div>" +
@@ -362,7 +461,7 @@
   }
 
   function appointmentRow(ap) {
-    return '<a class="row" href="#/agenda/' + esc(ap.id) + '"><div class="avatar">' + esc((ap.time || "").slice(0, 2) || "•") + '</div><div class="main">' +
+    return '<a class="row" href="#/agenda/' + pathId(ap.id) + '"><div class="avatar">' + esc((ap.time || "").slice(0, 2) || "•") + '</div><div class="main">' +
       '<div class="name">' + esc(ap.patientName) + "</div>" +
       '<div class="meta">' + esc(Money.formatDateIT(ap.date)) + (ap.time ? " · " + esc(ap.time) : "") + (ap.notes ? " · " + esc(ap.notes) : "") + "</div></div>" +
       '<span class="badge ' + (ap.invoiced ? "ok" : ap.proformaId ? "pf" : "neutral") + '">' + (ap.invoiced ? "Fatturato" : ap.proformaId ? "Pro forma" : "In agenda") + "</span></a>";
@@ -382,7 +481,7 @@
   function patientResults(list) {
     if (!list.length) return '<div class="empty">Nessun paziente trovato.</div>';
     return list.map(function (p) {
-      return '<a class="row" href="#/pazienti/' + esc(p.id) + '"><div class="avatar">' + esc(initials(p.name)) + '</div><div class="main">' +
+      return '<a class="row" href="#/pazienti/' + pathId(p.id) + '"><div class="avatar">' + esc(initials(p.name)) + '</div><div class="main">' +
         '<div class="name">' + esc(p.name) + "</div>" +
         '<div class="meta">' + esc(p.phone || p.cf || "Scheda senza telefono") + "</div></div></a>";
     }).join("");
@@ -398,6 +497,7 @@
     return '<a class="back" href="#/pazienti">Pazienti</a>' +
       '<div class="top"><div><p class="kicker">Paziente</p><h1>' + esc(p.name) + "</h1></div></div>" +
       '<div class="card"><div class="meta">Codice fiscale</div><div>' + esc(p.cf || "Non indicato") + "</div>" +
+      birthFieldsHtml(p.cf) +
       '<div class="meta" style="margin-top:8px">Telefono</div><div>' + (p.phone ? '<a href="tel:' + esc(p.phone) + '">' + esc(p.phone) + "</a>" : "Non indicato") + "</div>" +
       '<div class="meta" style="margin-top:8px">Email</div><div>' + (p.email ? '<a href="mailto:' + esc(p.email) + '">' + esc(p.email) + "</a>" : "Non indicata") + "</div>" +
       '<div class="meta" style="margin-top:8px">Indirizzo</div><div>' + esc(p.address || "Non indicato") + "</div>" +
@@ -408,7 +508,7 @@
       '<div class="stack" style="margin-top:12px"><a class="btn" href="#/fatture/nuova?paziente=' + encodeURIComponent(p.id) + '">Nuova fattura</a>' +
       '<a class="btn secondary" href="#/fatture/nuova?paziente=' + encodeURIComponent(p.id) + '&tipo=proforma">Nuova pro forma</a>' +
       '<a class="btn secondary" href="#/agenda/nuovo?paziente=' + encodeURIComponent(p.id) + '">Nuovo appuntamento</a>' +
-      '<a class="btn secondary" href="#/pazienti/' + esc(p.id) + '/modifica">Modifica scheda</a></div>' +
+      '<a class="btn secondary" href="#/pazienti/' + pathId(p.id) + '/modifica">Modifica scheda</a></div>' +
       '<div class="section-title"><h2>Fatture</h2><span>' + esc(Money.formatEuro(sumOf(fiscal).totale)) + "</span></div>" +
       (openPf.length ? '<p class="muted">Il totale è solo delle fatture. Le pro forma aperte non sono incluse.</p>' : "") +
       (inv.length ? '<div class="list">' + inv.map(invoiceRow).join("") + "</div>" : '<div class="empty">Ancora nessuna fattura.</div>') +
@@ -418,12 +518,13 @@
 
   function viewPatientForm(existing) {
     const p = existing || { id: "", name: "", phone: "", email: "", cf: "", address: "", notes: "", since: Money.todayISO() };
-    return '<a class="back" href="' + (p.id ? "#/pazienti/" + esc(p.id) : "#/pazienti") + '">Indietro</a>' +
+    return '<a class="back" href="' + (p.id ? "#/pazienti/" + pathId(p.id) : "#/pazienti") + '">Indietro</a>' +
       '<div class="top"><div><p class="kicker">Anagrafica</p><h1>' + (p.id ? "Modifica" : "Nuovo paziente") + "</h1></div></div>" +
       field("Nome e cognome", "p-name", p.name) +
       field("Telefono", "p-phone", p.phone, "tel") +
       field("Email", "p-email", p.email, "email") +
       field("Codice fiscale", "p-cf", p.cf) +
+      '<div id="cf-born">' + birthNoteHtml(p.cf) + "</div>" +
       field("Indirizzo", "p-address", p.address) +
       field("Paziente dal", "p-since", p.since, "date") +
       '<div class="field"><label for="p-notes">Note</label><textarea id="p-notes">' + esc(p.notes) + "</textarea></div>" +
@@ -500,10 +601,10 @@
     return '<a class="back" href="#/fatture">Fatture</a>' +
       '<div class="top"><div><p class="kicker">' + esc(docLabel(inv)) + "</p><h1>" + esc(inv.patientName) + "</h1></div></div>" +
       (proforma ? '<div class="note-box">Non è una fattura: non occupa un numero fiscale e non entra nel riepilogo per il commercialista. Quando la prestazione è assolta, convertila.</div>' : "") +
-      (converted ? '<div class="note-box">Convertita nella fattura ' + converted.number + "/" + converted.year + '. <a href="#/fatture/' + esc(converted.id) + '">Apri la fattura</a></div>' : "") +
+      (converted ? '<div class="note-box">Convertita nella fattura ' + converted.number + "/" + converted.year + '. <a href="#/fatture/' + pathId(converted.id) + '">Apri la fattura</a></div>' : "") +
       (proforma && inv.convertedInvoiceId && !converted ? '<div class="warn-box">Risultava convertita, ma quella fattura non è più in archivio. Puoi convertirla di nuovo.</div>' : "") +
       (inv.proformaNumber ? '<div class="note-box">Emessa dalla pro forma n. ' + esc(inv.proformaNumber) + "/" + esc(inv.proformaYear) +
-        (origin ? '. <a href="#/fatture/' + esc(origin.id) + '">Apri la pro forma</a>' : "") + "</div>" : "") +
+        (origin ? '. <a href="#/fatture/' + pathId(origin.id) + '">Apri la pro forma</a>' : "") + "</div>" : "") +
       '<div class="card"><div class="label">' + esc(Money.formatDateIT(inv.date)) + "</div>" +
       '<div class="figure">' + esc(Money.formatEuro(inv.totale)) + "</div>" +
       '<div class="sub">' + esc(inv.description || "") + "</div>" +
@@ -512,14 +613,14 @@
       }).join("") + '<div class="grand"><span>Da pagare</span><span>' + esc(Money.formatEuro(inv.totale)) + "</span></div></div>" +
       '<div>' + esc(inv.paymentMethod || "Pagamento non indicato") + (inv.paymentDate ? " · incasso " + esc(Money.formatDateIT(inv.paymentDate)) : " · da incassare") + "</div>" +
       (inv.notes ? "<p>" + esc(inv.notes) + "</p>" : "") +
-      (p ? '<p><a href="#/pazienti/' + esc(p.id) + '">Apri scheda paziente</a></p>' : "") +
+      (p ? '<p><a href="#/pazienti/' + pathId(p.id) + '">Apri scheda paziente</a></p>' : "") +
       "</div>" +
       bolloCard(inv) +
       '<div class="stack" style="margin-top:12px">' +
-      (proforma && !converted ? '<a class="btn" href="#/fatture/' + esc(inv.id) + '/converti">Converti in fattura</a>' : "") +
+      (proforma && !converted ? '<a class="btn" href="#/fatture/' + pathId(inv.id) + '/converti">Converti in fattura</a>' : "") +
       '<button class="btn' + (proforma && !converted ? " secondary" : "") + '" type="button" data-action="share-invoice" data-id="' + esc(inv.id) + '">Invia PDF</button>' +
       '<button class="btn secondary" type="button" data-action="pdf-invoice" data-id="' + esc(inv.id) + '">Scarica PDF</button>' +
-      '<a class="btn secondary" href="#/fatture/' + esc(inv.id) + '/modifica">Modifica</a>' +
+      '<a class="btn secondary" href="#/fatture/' + pathId(inv.id) + '/modifica">Modifica</a>' +
       '<button class="btn ghost" type="button" data-action="delete-invoice" data-id="' + esc(inv.id) + '">Elimina</button></div>';
   }
 
@@ -547,24 +648,28 @@
   function icloudCard() {
     const st = window.Sync ? Sync.state : {};
     const when = st.updatedAt ? st.updatedAt.replace("T", " ").slice(0, 16) : "";
-    let status = "Nessuna cartella collegata.";
-    if (st.linked && st.needsAuth) status = "Cartella «" + (st.folderName || "iCloud") + "» da autorizzare di nuovo.";
-    else if (st.linked) status = "Cartella collegata: " + (st.folderName || "iCloud") + ".";
-    else if (!st.canPick) status = "Su questo Safari la cartella non resta aperta da sola. Pubblica e aggiorna il file in iCloud Drive.";
-    return '<div class="card" style="margin-bottom:12px"><h2>Cartella iCloud</h2>' +
-      '<p class="muted">Pazienti, fatture e scansioni del bollo stanno nel file <strong>archivio-fatture-sonia.json</strong>. Scegli una cartella dentro iCloud Drive, per esempio «Fatture Sonia»: iCloud la copia sui dispositivi con lo stesso Apple ID.</p>' +
-      '<p class="muted">Su iPhone e iPad, Safari non può scrivere da solo in quella cartella. Dopo una modifica tocca <strong>Pubblica su iCloud</strong> e sostituisci il file. Per ricevere le modifiche tocca <strong>Aggiorna da iCloud</strong>. Se apri il sito con Chrome o Edge sul Mac, la cartella resta collegata e si aggiorna da sola.</p>' +
+    const name = st.folderName || "Drive";
+    let status = st.canPick ? "Nessuna cartella memorizzata." : "In Safari ogni pubblicazione apre File.";
+    if (st.linked && st.needsAuth) status = "Cartella «" + name + "»: serve di nuovo il permesso di scrittura.";
+    else if (st.linked) status = "Cartella memorizzata: " + name + ".";
+    const intro = st.canPick
+      ? "Scegli una volta la cartella, in iCloud Drive oppure in Google Drive. Il dispositivo chiede il permesso e lo ricorda: <strong>Pubblica su iCloud</strong> scrive lì, finché non cambi cartella. Se il browser chiede per quanto tempo, consenti a ogni visita."
+      : "In Chrome o Edge la cartella scelta qui resta memorizzata. In Safari, <strong>Pubblica su iCloud</strong> apre File: sostituisci <strong>archivio-fatture-sonia.json</strong> nella stessa cartella. Per ricevere le modifiche tocca <strong>Aggiorna da iCloud</strong>.";
+    return '<div class="card" style="margin-bottom:12px"><h2>Cartella su Drive</h2>' +
+      '<p class="muted">Pazienti, fatture e scansioni del bollo stanno nel file <strong>archivio-fatture-sonia.json</strong>. ' + intro + "</p>" +
       '<p>' + esc(status) + (when ? " Ultima modifica " + esc(when) + "." : "") + "</p>" +
       (st.lastError ? '<div class="warn-box">' + esc(st.lastError) + "</div>" : "") +
-      (st.conflict ? '<div class="warn-box">Questo dispositivo e iCloud hanno modifiche diverse. Scegli quale copia tenere.</div>' +
-        '<div class="stack"><button class="btn" type="button" data-action="sync-keep-remote">Tieni la copia iCloud</button>' +
+      (st.conflict ? '<div class="warn-box">Questo dispositivo e la cartella hanno modifiche diverse. Scegli quale copia tenere.</div>' +
+        '<div class="stack"><button class="btn" type="button" data-action="sync-keep-remote">Tieni la copia della cartella</button>' +
         '<button class="btn secondary" type="button" data-action="sync-keep-local">Tieni questo dispositivo</button></div>' : "") +
       '<div class="stack">' +
-      (st.canPick && !st.linked ? '<button class="btn" type="button" data-action="sync-choose">Scegli cartella iCloud</button>' : "") +
+      (st.canPick && !st.linked ? '<button class="btn" type="button" data-action="sync-choose">Scegli cartella su File o Drive</button>' : "") +
       (st.canPick && st.linked && st.needsAuth ? '<button class="btn" type="button" data-action="sync-auth">Autorizza la cartella</button>' : "") +
+      (st.canPick && st.linked ? '<button class="btn" type="button" data-action="export-backup">Pubblica su iCloud</button>' : "") +
       (st.canPick && st.linked ? '<button class="btn secondary" type="button" data-action="sync-now">Aggiorna ora</button>' : "") +
-      '<button class="btn' + (st.canPick && !st.linked ? " secondary" : "") + '" type="button" data-action="export-backup">Pubblica su iCloud</button>' +
-      '<label class="btn secondary">Aggiorna da iCloud<input class="import-file" type="file" accept="application/json,.json" hidden></label>' +
+      (st.canPick && st.linked ? '<button class="btn secondary" type="button" data-action="sync-choose">Cambia cartella</button>' : "") +
+      (!st.canPick ? '<button class="btn" type="button" data-action="export-backup">Pubblica su iCloud</button>' +
+        '<label class="btn secondary">Aggiorna da iCloud<input class="import-file" type="file" accept="application/json,.json" hidden></label>' : "") +
       (st.linked ? '<button class="btn ghost" type="button" data-action="sync-disconnect">Scollega cartella</button>' : "") +
       "</div></div>";
   }
@@ -650,7 +755,7 @@
     const kindSeg = d.id ? "" :
       '<div class="seg"><button type="button" class="' + (proforma ? "" : "on") + '" data-action="seg-kind" data-kind="fattura">Fattura</button>' +
       '<button type="button" class="' + (proforma ? "on" : "") + '" data-action="seg-kind" data-kind="proforma">Pro forma</button></div>';
-    return '<a class="back" href="' + (d.id ? "#/fatture/" + esc(d.id) : "#/fatture") + '">Indietro</a>' +
+    return '<a class="back" href="' + (d.id ? "#/fatture/" + pathId(d.id) : "#/fatture") + '">Indietro</a>' +
       kindSeg +
       '<div class="top"><div><p class="kicker" id="doc-kicker">' + (proforma ? "Pro forma " : "Numero ") + esc(previewN) + "/" + year + "</p><h1>" + heading + "</h1></div></div>" +
       (proforma && d.convertedInvoiceId ? '<div class="note-box">Già convertita nella fattura ' + esc(d.convertedNumber) + "/" + esc(d.convertedYear) + ". Le modifiche restano sulla pro forma e non cambiano la fattura.</div>" : "") +
@@ -689,13 +794,13 @@
     if (!isProforma(inv)) return missing("Solo una pro forma si converte in fattura.", "#/fatture/" + inv.id);
     const linked = inv.convertedInvoiceId && S.invoices.find(function (i) { return i.id === inv.convertedInvoiceId; });
     if (linked) {
-      return '<a class="back" href="#/fatture/' + esc(inv.id) + '">Pro forma</a>' +
+      return '<a class="back" href="#/fatture/' + pathId(inv.id) + '">Pro forma</a>' +
         '<div class="top"><div><p class="kicker">Già convertita</p><h1>Fattura ' + linked.number + "/" + linked.year + "</h1></div></div>" +
         '<p>Questa pro forma è già diventata una fattura. Il numero fiscale non viene assegnato una seconda volta.</p>' +
-        '<a class="btn" href="#/fatture/' + esc(linked.id) + '">Apri la fattura</a>';
+        '<a class="btn" href="#/fatture/' + pathId(linked.id) + '">Apri la fattura</a>';
     }
     const date = Money.todayISO();
-    return '<a class="back" href="#/fatture/' + esc(inv.id) + '">Pro forma</a>' +
+    return '<a class="back" href="#/fatture/' + pathId(inv.id) + '">Pro forma</a>' +
       '<div class="top"><div><p class="kicker">Da pro forma ' + inv.number + "/" + inv.year + '</p><h1>Converti in fattura</h1></div></div>' +
       '<div class="card"><div class="label">' + esc(inv.patientName) + "</div>" +
       '<div class="figure">' + esc(Money.formatEuro(inv.totale)) + "</div>" +
@@ -715,15 +820,21 @@
     const daysIn = new Date(y, m, 0).getDate();
     const marks = {};
     S.appointments.forEach(function (a) { if (a.date && a.date.slice(0, 7) === S.month) marks[a.date] = true; });
+    const birthMarks = {};
+    for (let d = 1; d <= daysIn; d++) {
+      const iso = y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+      if (birthdaysOn(iso).length) birthMarks[iso] = true;
+    }
     let cells = "";
     for (let i = 0; i < start; i++) cells += '<button type="button" class="out" tabindex="-1"></button>';
     for (let d = 1; d <= daysIn; d++) {
       const iso = y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0");
-      const cls = (iso === S.day ? " on" : "") + (iso === Money.todayISO() ? " today" : "") + (marks[iso] ? " has" : "");
+      const cls = (iso === S.day ? " on" : "") + (iso === Money.todayISO() ? " today" : "") + (marks[iso] ? " has" : "") + (birthMarks[iso] ? " bday" : "");
       cells += '<button type="button" class="' + cls + '" data-action="pick-day" data-date="' + iso + '">' + d + "</button>";
     }
     const dayItems = S.appointments.filter(function (a) { return a.date === S.day; })
       .sort(function (a, b) { return (a.time || "").localeCompare(b.time || ""); });
+    const birthItems = birthdaysOn(S.day);
     return '<div class="top"><div><p class="kicker">Calendario</p><h1>Agenda</h1></div>' +
       '<a class="btn small" href="#/agenda/nuovo?data=' + esc(S.day) + '">Nuovo</a></div>' +
       '<div class="card"><div class="cal-head"><button type="button" data-action="prev-month" aria-label="Mese precedente">‹</button>' +
@@ -732,7 +843,9 @@
       '<div class="weekdays"><span>L</span><span>M</span><span>M</span><span>G</span><span>V</span><span>S</span><span>D</span></div>' +
       '<div class="days">' + cells + "</div></div>" +
       '<div class="section-title"><h2>' + esc(Money.formatDateIT(S.day)) + "</h2></div>" +
-      (dayItems.length ? '<div class="list">' + dayItems.map(appointmentRow).join("") + "</div>" : '<div class="empty">Nessun appuntamento in questo giorno.</div>');
+      (birthItems.length ? '<div class="list">' + birthItems.map(birthdayRow).join("") + "</div>" : "") +
+      (dayItems.length ? '<div class="list">' + dayItems.map(appointmentRow).join("") + "</div>" : "") +
+      (!birthItems.length && !dayItems.length ? '<div class="empty">Nessun appuntamento in questo giorno.</div>' : "");
   }
 
   function viewAppointment(ap) {
@@ -745,9 +858,9 @@
       '<div class="card">' + (ap.notes ? "<p>" + esc(ap.notes) + "</p>" : "<p class=\"muted\">Nessuna nota.</p>") +
       '<span class="badge ' + (inv ? "ok" : pf ? "pf" : "neutral") + '">' + (inv ? "Fatturato" : pf ? "Pro forma" : "Da fatturare") + "</span></div>" +
       '<div class="stack" style="margin-top:12px">' +
-      (inv ? '<a class="btn" href="#/fatture/' + esc(inv.id) + '">Apri fattura ' + inv.number + "/" + inv.year + "</a>" :
+      (inv ? '<a class="btn" href="#/fatture/' + pathId(inv.id) + '">Apri fattura ' + inv.number + "/" + inv.year + "</a>" :
         '<a class="btn" href="#/fatture/nuova?' + newQuery + '">Crea fattura</a>') +
-      (pf ? '<a class="btn secondary" href="#/fatture/' + esc(pf.id) + '">Apri pro forma ' + pf.number + "/" + pf.year + "</a>" :
+      (pf ? '<a class="btn secondary" href="#/fatture/' + pathId(pf.id) + '">Apri pro forma ' + pf.number + "/" + pf.year + "</a>" :
         (!inv ? '<a class="btn secondary" href="#/fatture/nuova?tipo=proforma&' + newQuery + '">Crea pro forma</a>' : "")) +
       '<a class="btn secondary" href="#/agenda/nuovo?id=' + encodeURIComponent(ap.id) + '">Modifica</a>' +
       '<button class="btn ghost" type="button" data-action="delete-appointment" data-id="' + esc(ap.id) + '">Elimina</button></div>';
@@ -847,6 +960,7 @@
   function viewSettings() {
     const s = S.settings;
     const fields = [
+      ["studioNome", "Nome dello studio", s.studioNome],
       ["titolo", "Titolo", s.titolo],
       ["nome", "Nome e cognome", s.nome],
       ["qualifica", "Qualifica", s.qualifica],
@@ -869,8 +983,14 @@
       ["descrizioneDefault", "Prestazione predefinita", s.descrizioneDefault],
       ["emailCommercialista", "Email commercialista", s.emailCommercialista],
     ];
+    const customLogo = !!s.logoData;
     return '<div class="top"><div><p class="kicker">Intestazione</p><h1>Professionista</h1></div></div>' +
-      '<div class="note-box">Questi dati finiscono su ogni PDF. Il regime è impostato sul forfettario, come nell\'autodichiarazione del 24/09/2026. Se il commercialista usa l\'esenzione sanitaria, cambialo qui.</div>' +
+      '<div class="note-box">Logo, nome e dati dello studio sono il profilo di questo professionista. Restano nell\'archivio del dispositivo e nella cartella condivisa: un aggiornamento dell\'app non li sostituisce. Per un altro studio si compilano qui.</div>' +
+      '<div class="logo-edit"><img class="brand-logo" src="' + logoSrc() + '" alt="Logo dello studio"><div class="stack">' +
+      '<label class="btn secondary">Cambia logo<input id="logo-file" type="file" accept="image/png,image/jpeg,image/webp" hidden></label>' +
+      (customLogo ? '<button class="btn ghost" type="button" data-action="logo-reset">Torna al logo predefinito</button>' : "") +
+      "</div></div>" +
+      '<p class="muted">Questi dati finiscono su ogni PDF. Il regime parte dal forfettario. Se il commercialista usa l\'esenzione sanitaria, cambialo qui.</p>' +
       fields.map(function (f) { return field(f[1], "s-" + f[0], f[2] || ""); }).join("") +
       '<div class="field"><label>Regime in fattura</label><select id="s-regime">' +
       '<option value="forfettario"' + (s.regime !== "esente" ? " selected" : "") + ">Regime forfettario, Legge 190/2014</option>" +
@@ -893,8 +1013,8 @@
       '<div class="card help"><ol>' +
       "<li>In Safari, su iPhone o iPad, apri <strong>https://stefanoinnamorati.github.io/fatture-sonia/</strong>. Il Mac può restare spento.</li>" +
       "<li>Tocca Condividi e poi <strong>Aggiungi a Home</strong>.</li>" +
-      "<li>La prima volta i pazienti non ci sono. In <strong>Altro</strong> scegli una cartella dentro iCloud Drive, oppure tocca <strong>Aggiorna da iCloud</strong> e apri <strong>archivio-fatture-sonia.json</strong>.</li>" +
-      "<li>Dopo una modifica su iPhone, tocca <strong>Pubblica su iCloud</strong> e sostituisci quel file nella stessa cartella. Chrome sul Mac, con la cartella collegata, lo fa da solo.</li>" +
+      "<li>La prima volta i pazienti non ci sono. In <strong>Impostazioni</strong> scegli la cartella su File o Drive. In Safari tocca <strong>Aggiorna da iCloud</strong> e apri <strong>archivio-fatture-sonia.json</strong>.</li>" +
+      "<li>Con la cartella memorizzata, <strong>Pubblica su iCloud</strong> scrive lì senza riaprire File. In Safari ogni pubblicazione chiede di sostituire il file nella stessa cartella.</li>" +
       "<li>Se la fattura supera 77,47 €, apri la fattura e archivia la foto del foglio con la marca da bollo, oppure il PDF dell'assolvimento elettronico.</li>" +
       "<li>Per mandare il riepilogo: Esporta, scegli le date, poi <strong>Invia per email</strong>.</li>" +
       "</ol>" +
@@ -994,6 +1114,11 @@
       await deleteAppointment(btn.dataset.id);
     } else if (action === "save-settings") {
       await saveSettings();
+    } else if (action === "logo-reset") {
+      S.settings.logoData = "";
+      await DB.setMeta("settings", S.settings);
+      toast("Logo predefinito ripristinato");
+      render();
     } else if (action === "set-pin") {
       await setPin();
     } else if (action === "clear-pin") {
@@ -1035,6 +1160,10 @@
   }
 
   function onInput(e) {
+    if (e.target.id === "p-cf") {
+      const box = document.getElementById("cf-born");
+      if (box) box.innerHTML = birthNoteHtml(e.target.value);
+    }
     if (e.target.id === "amount" && draft) {
       draft.amountInput = e.target.value;
       const box = document.getElementById("breakdown");
@@ -1305,10 +1434,10 @@
     if (!name) return toast("Scrivi il nome.");
     const patient = {
       id: id || ("ID-" + Math.random().toString(16).slice(2, 10)),
-      name: name,
+      name: Money.nameUpper(name),
       phone: document.getElementById("p-phone").value.trim(),
       email: document.getElementById("p-email").value.trim(),
-      cf: document.getElementById("p-cf").value.trim().toUpperCase(),
+      cf: Money.cfCanon(document.getElementById("p-cf").value),
       address: document.getElementById("p-address").value.trim(),
       notes: document.getElementById("p-notes").value.trim(),
       since: document.getElementById("p-since").value,
@@ -1376,9 +1505,40 @@
     location.hash = "#/agenda";
   }
 
+  function prepareLogo(file) {
+    return new Promise(function (resolve) {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = function () {
+        const max = 512;
+        const scale = Math.min(1, max / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        resolve("");
+      };
+      img.src = url;
+    });
+  }
+
+  async function saveLogo(file) {
+    const data = await prepareLogo(file);
+    if (!data) return toast("Immagine non leggibile.");
+    S.settings.logoData = data;
+    await DB.setMeta("settings", S.settings);
+    toast("Logo aggiornato");
+    render();
+  }
+
   async function saveSettings() {
     const next = Object.assign({}, S.settings);
-    ["titolo", "nome", "qualifica", "ordine", "sezione", "numeroAlbo", "delibera", "piva", "cf", "studio", "domicilio", "telefono", "email", "pec", "sito", "iban", "banca", "intestatario", "enpap", "descrizioneDefault", "emailCommercialista"].forEach(function (key) {
+    ["studioNome", "titolo", "nome", "qualifica", "ordine", "sezione", "numeroAlbo", "delibera", "piva", "cf", "studio", "domicilio", "telefono", "email", "pec", "sito", "iban", "banca", "intestatario", "enpap", "descrizioneDefault", "emailCommercialista"].forEach(function (key) {
       const el = document.getElementById("s-" + key);
       if (el) next[key] = el.value.trim();
     });
@@ -1408,11 +1568,25 @@
   }
 
   async function exportBackup() {
+    if (Sync.state.canPick) {
+      if (!Sync.state.linked) {
+        toast("Scegli prima la cartella su File o Drive. Resta quella finché non la cambi.");
+        return;
+      }
+      try {
+        const result = await Sync.publishSaved();
+        await finishSync(result, "Archivio pubblicato nella cartella");
+      } catch (err) {
+        console.error(err);
+        toast("Non riesco a scrivere nella cartella.");
+      }
+      return;
+    }
     const blob = await Sync.archiveBlob();
     const name = Sync.FILE_NAME;
     try {
-      const how = await shareOrDownload([{ blob: blob, name: name }], "Archivio fatture, da salvare in iCloud Drive");
-      toast(how === "shared" ? "Scegli File e sostituisci archivio-fatture-sonia.json nella cartella iCloud" : "Archivio scaricato: spostalo nella cartella iCloud, sostituendo il file precedente");
+      const how = await shareOrDownload([{ blob: blob, name: name }], "Archivio fatture, da sostituire nella cartella già scelta");
+      toast(how === "shared" ? "In File, sostituisci archivio-fatture-sonia.json nella cartella già scelta" : "Archivio scaricato: sostituisci il file nella cartella già scelta");
     } catch (err) {
       if (err && err.name === "AbortError") return;
       downloadBlob(blob, name);
@@ -1542,7 +1716,7 @@
       await finishSync(result, "Cartella iCloud collegata");
     } catch (err) {
       if (err && err.name === "AbortError") return;
-      toast("Questa versione di Safari non può tenere aperta una cartella. Usa Pubblica e Aggiorna.");
+      toast("Qui la cartella si memorizza con Chrome o Edge. In Safari usa Pubblica e Aggiorna.");
     }
   }
 
@@ -1638,6 +1812,14 @@
     }
     if (e.target.classList.contains("bollo-file") && e.target.files && e.target.files[0]) {
       saveBolloScan(e.target.dataset.id, e.target.files[0]).catch(function () { toast("Scansione non archiviata."); });
+      e.target.value = "";
+    }
+    if (e.target.id === "p-cf") {
+      const box = document.getElementById("cf-born");
+      if (box) box.innerHTML = birthNoteHtml(e.target.value);
+    }
+    if (e.target.id === "logo-file" && e.target.files && e.target.files[0]) {
+      saveLogo(e.target.files[0]).catch(function () { toast("Logo non aggiornato."); });
       e.target.value = "";
     }
     if (e.target.id === "bollo-data") {

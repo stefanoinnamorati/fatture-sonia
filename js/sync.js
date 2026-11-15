@@ -283,9 +283,24 @@
     }, 700);
   }
 
+  async function publishSaved() {
+    if (!handle) return "idle";
+    if (!(await permitted(handle, true))) {
+      state.needsAuth = true;
+      notify();
+      return "auth";
+    }
+    state.needsAuth = false;
+    await publishNow();
+    return "pushed";
+  }
+
   async function chooseFolder() {
     if (!state.canPick) throw new Error("unsupported");
-    handle = await window.showDirectoryPicker({ mode: "readwrite", id: "fatture-sonia" });
+    handle = await window.showDirectoryPicker({
+      mode: "readwrite",
+      id: "fatture-sonia",
+    });
     await DB.runQuiet(async function () {
       await DB.setMeta("dirHandle", handle);
     });
@@ -359,6 +374,7 @@
     noteLocalChange: noteLocalChange,
     boot: boot,
     chooseFolder: chooseFolder,
+    publishSaved: publishSaved,
     authorize: authorize,
     disconnect: disconnect,
     reconcile: reconcile,

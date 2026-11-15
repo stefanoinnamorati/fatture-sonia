@@ -90,21 +90,98 @@
     return d.getFullYear() + "-" + m + "-" + day;
   }
 
+  function nameUpper(name) {
+    return String(name || "").trim().replace(/\s+/g, " ").toLocaleUpperCase("it");
+  }
+
+  function cfCanon(cf) {
+    const s = String(cf || "").toUpperCase().replace(/\s/g, "");
+    if (!/^[A-Z0-9]{16}$/.test(s)) return s;
+    const chars = s.split("");
+    [6, 7, 9, 10, 12, 13, 14].forEach(function (i) {
+      if (chars[i] === "O") chars[i] = "0";
+      if (chars[i] === "I") chars[i] = "1";
+    });
+    return chars.join("");
+  }
+
   function cfValid(cf) {
     if (!cf) return true;
-    const s = String(cf).toUpperCase().replace(/\s/g, "");
-    if (!/^[A-Z]{6}[0-9]{2}[A-Z][0-9]{2}[A-Z][0-9]{3}[A-Z]$/.test(s)) return false;
+    const s = cfCanon(cf);
+    if (!/^[A-Z]{6}[A-Z0-9]{2}[A-Z][A-Z0-9]{2}[A-Z][A-Z0-9]{3}[A-Z]$/.test(s)) return false;
     const odd = {
       0: 1, 1: 0, 2: 5, 3: 7, 4: 9, 5: 13, 6: 15, 7: 17, 8: 19, 9: 21,
       A: 1, B: 0, C: 5, D: 7, E: 9, F: 13, G: 15, H: 17, I: 19, J: 21,
       K: 2, L: 4, M: 18, N: 20, O: 11, P: 3, Q: 6, R: 8, S: 12, T: 14,
       U: 16, V: 10, W: 22, X: 25, Y: 24, Z: 23,
     };
-    const even = {};
-    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").forEach(function (ch, i) { even[ch] = i; });
+    function evenValue(ch) {
+      if (ch >= "0" && ch <= "9") return ch.charCodeAt(0) - 48;
+      return ch.charCodeAt(0) - 65;
+    }
     let sum = 0;
-    for (let i = 0; i < 15; i++) sum += i % 2 === 0 ? odd[s[i]] : even[s[i]];
+    for (let i = 0; i < 15; i++) {
+      const value = i % 2 === 0 ? odd[s[i]] : evenValue(s[i]);
+      if (value == null || value < 0) return false;
+      sum += value;
+    }
     return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[sum % 26] === s[15];
+  }
+
+  const CF_MONTH = { A: 1, B: 2, C: 3, D: 4, E: 5, H: 6, L: 7, M: 8, P: 9, R: 10, S: 11, T: 12 };
+  const CF_OMO = { L: "0", M: "1", N: "2", P: "3", Q: "4", R: "5", S: "6", T: "7", U: "8", V: "9" };
+
+  function leapYear(year) {
+    return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  }
+
+  function cfDecode(cf, today) {
+    if (!cf || !cfValid(cf)) return null;
+    const raw = cfCanon(cf);
+    if (raw.length !== 16) return null;
+    const chars = raw.split("");
+    [6, 7, 9, 10, 12, 13, 14].forEach(function (i) {
+      if (CF_OMO[chars[i]]) chars[i] = CF_OMO[chars[i]];
+    });
+    const month = CF_MONTH[chars[8]];
+    if (!month) return null;
+    let day = parseInt(chars[9] + chars[10], 10);
+    if (isNaN(day)) return null;
+    const sex = day > 40 ? "F" : "M";
+    if (day > 40) day -= 40;
+    if (day < 1 || day > 31) return null;
+    const yy = parseInt(chars[6] + chars[7], 10);
+    if (isNaN(yy)) return null;
+    const todayIso = today || todayISO();
+    let year = 2000 + yy;
+    const mm = String(month).padStart(2, "0");
+    const dd = String(day).padStart(2, "0");
+    if (year + "-" + mm + "-" + dd > todayIso) year -= 100;
+    const check = new Date(year, month - 1, day);
+    if (check.getFullYear() !== year || check.getMonth() !== month - 1 || check.getDate() !== day) return null;
+    const code = chars[11] + chars[12] + chars[13] + chars[14];
+    const place = window.Places && window.Places[code] ? window.Places[code] : "";
+    return {
+      date: year + "-" + mm + "-" + dd,
+      sex: sex,
+      code: code,
+      place: place,
+      foreign: code.charAt(0) === "Z",
+    };
+  }
+
+  function ageYears(birth, today) {
+    if (!birth || birth.length < 10) return null;
+    const t = today || todayISO();
+    let age = Number(t.slice(0, 4)) - Number(birth.slice(0, 4));
+    if (t.slice(5) < birth.slice(5)) age -= 1;
+    return age;
+  }
+
+  function birthdayOn(birth, year) {
+    const md = birth.slice(5);
+    if (md === "02-29" && !leapYear(year)) return { date: year + "-02-28", shifted: true };
+    return { date: year + "-" + md, shifted: false };
   }
 
   window.Money = {
@@ -117,6 +194,11 @@
     formatEuro: formatEuro,
     formatDateIT: formatDateIT,
     todayISO: todayISO,
+    nameUpper: nameUpper,
+    cfCanon: cfCanon,
     cfValid: cfValid,
+    cfDecode: cfDecode,
+    ageYears: ageYears,
+    birthdayOn: birthdayOn,
   };
 })();

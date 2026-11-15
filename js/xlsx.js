@@ -149,8 +149,8 @@
       rows.push([
         String(inv.number),
         Money.formatDateIT(inv.date),
-        inv.patientName,
-        patient && patient.cf ? patient.cf : "",
+        Money.nameUpper(inv.patientName),
+        patient && patient.cf ? Money.cfCanon(patient.cf) : "",
         inv.totale / 100,
         inv.competenze / 100,
         inv.cassa / 100,

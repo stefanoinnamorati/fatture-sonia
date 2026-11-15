@@ -1,7 +1,12 @@
 (function () {
   let logoPromise = null;
 
-  function loadLogo() {
+  function logoKind(data) {
+    return String(data || "").indexOf("image/jpeg") >= 0 ? "JPEG" : "PNG";
+  }
+
+  function loadLogo(settings) {
+    if (settings && settings.logoData) return Promise.resolve(settings.logoData);
     if (!logoPromise) {
       logoPromise = fetch("assets/logo.png?v=3")
         .then(function (r) { return r.blob(); })
@@ -54,7 +59,7 @@
     const right = pageW - 16;
 
     if (logo) {
-      doc.addImage(logo, "PNG", left, 12, 26, 26, "logo");
+      doc.addImage(logo, logoKind(logo), left, 12, 26, 26, "logo");
     }
 
     const textX = logo ? left + 30 : left;
@@ -111,10 +116,10 @@
     doc.setTextColor(28, 25, 21);
     doc.setFont("times", "bold");
     doc.setFontSize(13);
-    doc.text(patient ? patient.name : inv.patientName, left + 4, y + 13);
+    doc.text(Money.nameUpper(patient && patient.name ? patient.name : inv.patientName), left + 4, y + 13);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
-    const cf = patient && patient.cf ? "C.F. " + patient.cf : "Codice fiscale non indicato";
+    const cf = patient && patient.cf ? "C.F. " + Money.cfCanon(patient.cf) : "Codice fiscale non indicato";
     doc.text(cf, left + 4, y + 18.5);
     doc.text(patient && patient.address ? patient.address : "Indirizzo non indicato", left + 4, y + 23.5);
 
@@ -235,7 +240,7 @@
   async function invoicePdf(inv, patient, settings) {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: "mm", format: "a4" });
-    const logo = await loadLogo();
+    const logo = await loadLogo(settings);
     doc.setProperties({
       title: (inv.kind === "proforma" ? "Pro forma " : "Fattura ") + inv.number + "/" + inv.year,
       author: (settings.titolo ? settings.titolo + " " : "") + settings.nome,
@@ -250,7 +255,7 @@
     const settings = meta.settings;
     const list = meta.invoices || [];
     const doc = new jsPDF({ unit: "mm", format: "a4" });
-    const logo = await loadLogo();
+    const logo = await loadLogo(settings);
     doc.setProperties({
       title: "Fatture " + (meta.period || ""),
       author: (settings.titolo ? settings.titolo + " " : "") + (settings.nome || ""),
@@ -300,10 +305,10 @@
     ];
     const left = 8;
     const pageH = 210;
-    const logo = await loadLogo();
+    const logo = await loadLogo(settings);
 
     function pageChrome(page, pages) {
-      if (logo) doc.addImage(logo, "PNG", left, 6, 14, 14);
+      if (logo) doc.addImage(logo, logoKind(logo), left, 6, 14, 14);
       const textX = logo ? left + 16 : left;
       doc.setFont("times", "bold");
       doc.setFontSize(14);
@@ -346,8 +351,8 @@
         const values = [
           String(inv.number),
           Money.formatDateIT(inv.date),
-          inv.patientName,
-          patient && patient.cf ? patient.cf : "",
+          Money.nameUpper(inv.patientName),
+          patient && patient.cf ? Money.cfCanon(patient.cf) : "",
           euro(inv.totale),
           euro(inv.competenze),
           euro(inv.cassa),
