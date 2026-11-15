@@ -26,6 +26,8 @@
     attachExcel: true,
     attachPdf: true,
     attachInvoices: true,
+    folds: {},
+    sessions: null,
   };
 
   let draft = null;
@@ -331,6 +333,7 @@
       return;
     }
     tab.hidden = false;
+    S.sessions = null;
     const parts = route().parts;
     const tabName = !parts.length ? "oggi" : ["pazienti", "fatture", "agenda"].includes(parts[0]) ? parts[0] : "altro";
     tab.querySelectorAll("a").forEach(function (a) {
@@ -338,7 +341,41 @@
     });
     const who = (S.settings.studioNome || S.settings.nome || "Fatture").trim();
     document.title = "Fatture · " + who;
-    app.innerHTML = screen();
+    app.innerHTML = syncBannerHtml() + screen();
+  }
+
+  function syncDirty() {
+    const st = window.Sync ? Sync.state : {};
+    return !!(st.syncing || st.pending || st.conflict || (st.updatedAt && st.updatedAt !== st.lastSyncedAt));
+  }
+
+  function syncBannerHtml() {
+    if (!window.Sync || !syncDirty()) return "";
+    const st = Sync.state;
+    if (st.conflict) {
+      return '<div id="sync-banner" class="sync-banner">Il file e questo dispositivo hanno modifiche diverse.' +
+        '<div class="stack" style="margin-top:8px"><button class="btn" type="button" data-action="sync-keep-remote">Tieni il file</button>' +
+        '<button class="btn secondary" type="button" data-action="sync-keep-local">Tieni questo dispositivo</button></div></div>';
+    }
+    let text = "Ci sono modifiche non ancora nel file. Scorri verso il basso per sincronizzarlo.";
+    if (st.syncing) text = "Sincronizzazione con il file…";
+    else if (st.canPick && !st.linked) text = "Ci sono modifiche non ancora nel file. Scegli la cartella in Impostazioni, poi scorri verso il basso.";
+    else if (!st.canPick) text = "Ci sono modifiche non ancora nel file. Scorri verso il basso per pubblicarlo.";
+    return '<div id="sync-banner" class="sync-banner">' + esc(text) + "</div>";
+  }
+
+  function refreshSyncBanner() {
+    const html = syncBannerHtml();
+    const cur = document.getElementById("sync-banner");
+    if (!html) {
+      if (cur) cur.remove();
+      return;
+    }
+    if (cur) cur.outerHTML = html;
+    else {
+      const app = document.getElementById("app");
+      if (app) app.insertAdjacentHTML("afterbegin", html);
+    }
   }
 
   function logoSrc() {
@@ -399,7 +436,113 @@
     const nato = item.info.sex === "F" ? "nata" : "nato";
     const extra = item.shifted ? " · " + nato + " il 29 febbraio" : "";
     return '<a class="row" href="#/pazienti/' + pathId(p.id) + '"><div class="avatar bday">' + esc(item.info.date.slice(8)) + '</div><div class="main">' +
-      '<div class="name">' + esc(p.name) + '</div><div class="meta">Compleanno · compie ' + esc(ageLabel(item.age)) + extra + "</div></div></a>";
+      '<div class="name">' + esc(p.name) + '</div><div class="meta">Compleanno · ' + esc(compieText(item.age)) + extra + "</div></div></a>";
+  }
+
+  function compieText(n) {
+    const age = Number(n);
+    if (!age || age < 1) return "anno di nascita";
+    if (age === 1) return "compie 1 anno";
+    return "compie " + age + " anni";
+  }
+
+  function isoFromDate(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  function shiftISO(iso, days) {
+    const p = String(iso || "").split("-").map(Number);
+    const d = new Date(p[0], (p[1] || 1) - 1, p[2] || 1);
+    d.setDate(d.getDate() + days);
+    return isoFromDate(d);
+  }
+
+  function addMonthsISO(iso, months) {
+    const p = String(iso || "").split("-").map(Number);
+    const d = new Date(p[0], (p[1] || 1) - 1 + months, 1);
+    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(p[2] || 1, last));
+    return isoFromDate(d);
+  }
+
+  function seduteBase(patient) {
+    const n = Number(patient && patient.seduteFatte);
+    if (!isFinite(n) || n <= 0) return 0;
+    return Math.floor(n);
+  }
+
+  function sessionMap() {
+    const groups = {};
+    S.appointments.forEach(function (a) {
+      if (!groups[a.patientId]) groups[a.patientId] = [];
+      groups[a.patientId].push(a);
+    });
+    const map = {};
+    Object.keys(groups).forEach(function (id) {
+      const base = seduteBase(patientById(id));
+      groups[id].sort(function (a, b) {
+        const ka = (a.date || "") + "T" + (a.time || "") + "|" + a.id;
+        const kb = (b.date || "") + "T" + (b.time || "") + "|" + b.id;
+        return ka < kb ? -1 : ka > kb ? 1 : 0;
+      });
+      groups[id].forEach(function (a, i) { map[a.id] = base + i + 1; });
+    });
+    return map;
+  }
+
+  function sessionNumber(ap) {
+    if (!ap) return 0;
+    if (!S.sessions) S.sessions = sessionMap();
+    return S.sessions[ap.id] || seduteBase(patientById(ap.patientId)) + 1;
+  }
+
+  function birthdaysInMonth(month) {
+    const year = Number(String(month || "").slice(0, 4));
+    const list = [];
+    S.patients.forEach(function (p) {
+      const info = Money.cfDecode(p.cf);
+      if (!info) return;
+      const when = Money.birthdayOn(info.date, year);
+      if (when.date.slice(0, 7) !== month) return;
+      list.push({
+        patient: p,
+        info: info,
+        date: when.date,
+        shifted: when.shifted,
+        turning: year - Number(info.date.slice(0, 4)),
+      });
+    });
+    list.sort(function (a, b) {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return a.patient.name.localeCompare(b.patient.name, "it");
+    });
+    return list;
+  }
+
+  function monthBirthdayRow(item) {
+    const day = Number(item.date.slice(8));
+    const monthName = MESI[Number(item.date.slice(5, 7)) - 1];
+    const nato = item.info.sex === "F" ? "nata" : "nato";
+    const extra = item.shifted ? " · " + nato + " il 29 febbraio" : "";
+    return '<a class="row" href="#/pazienti/' + pathId(item.patient.id) + '"><div class="avatar bday">' + day + '</div><div class="main">' +
+      '<div class="name">' + esc(item.patient.name) + " (" + esc(compieText(item.turning)) + ")</div>" +
+      '<div class="meta">' + day + " " + esc(monthName) + extra + "</div></div></a>";
+  }
+
+  function foldSection(id, title, count, body) {
+    return '<details class="fold"' + (S.folds[id] ? " open" : "") + ' data-fold="' + id + '">' +
+      "<summary><span>" + esc(title) + '</span><span class="count">' + count + "</span></summary>" + body + "</details>";
+  }
+
+  function activePatientIds() {
+    const today = Money.todayISO();
+    const from = shiftISO(today, -30);
+    const to = shiftISO(today, 30);
+    const ids = {};
+    S.appointments.forEach(function (a) {
+      if (a.date >= from && a.date <= to) ids[a.patientId] = true;
+    });
+    return ids;
   }
 
   function viewLock() {
@@ -463,7 +606,7 @@
   function appointmentRow(ap) {
     return '<a class="row" href="#/agenda/' + pathId(ap.id) + '"><div class="avatar">' + esc((ap.time || "").slice(0, 2) || "•") + '</div><div class="main">' +
       '<div class="name">' + esc(ap.patientName) + "</div>" +
-      '<div class="meta">' + esc(Money.formatDateIT(ap.date)) + (ap.time ? " · " + esc(ap.time) : "") + (ap.notes ? " · " + esc(ap.notes) : "") + "</div></div>" +
+      '<div class="meta">' + esc(Money.formatDateIT(ap.date)) + (ap.time ? " · " + esc(ap.time) : "") + " · seduta " + sessionNumber(ap) + (ap.notes ? " · " + esc(ap.notes) : "") + "</div></div>" +
       '<span class="badge ' + (ap.invoiced ? "ok" : ap.proformaId ? "pf" : "neutral") + '">' + (ap.invoiced ? "Fatturato" : ap.proformaId ? "Pro forma" : "In agenda") + "</span></a>";
   }
 
@@ -472,8 +615,13 @@
     const list = sortedPatients().filter(function (p) {
       return matches(p.name + " " + p.cf + " " + p.phone, q);
     });
+    const active = activePatientIds();
+    const activeCount = S.patients.filter(function (p) { return active[p.id]; }).length;
     return '<div class="top"><div><p class="kicker">Anagrafica</p><h1>Pazienti</h1></div>' +
       '<a class="btn small" href="#/pazienti/nuovo">Nuovo</a></div>' +
+      '<div class="grid-2"><div class="card"><div class="label">Contatti</div><div class="figure">' + S.patients.length + "</div></div>" +
+      '<div class="card"><div class="label">Pazienti attivi</div><div class="figure">' + activeCount + "</div></div></div>" +
+      '<p class="muted">Attivo è chi ha un appuntamento nei 30 giorni prima di oggi o nei prossimi 30.</p>' +
       '<input id="q" class="search" placeholder="Nome, telefono, codice fiscale" value="' + esc(q) + '">' +
       '<div id="results" class="list" style="margin-top:12px">' + patientResults(list) + "</div>";
   }
@@ -502,6 +650,8 @@
       '<div class="meta" style="margin-top:8px">Email</div><div>' + (p.email ? '<a href="mailto:' + esc(p.email) + '">' + esc(p.email) + "</a>" : "Non indicata") + "</div>" +
       '<div class="meta" style="margin-top:8px">Indirizzo</div><div>' + esc(p.address || "Non indicato") + "</div>" +
       (p.notes ? '<div class="meta" style="margin-top:8px">Note</div><div>' + esc(p.notes) + "</div>" : "") +
+      '<div class="meta" style="margin-top:8px">Sedute già effettuate</div><div>' + seduteBase(p) + ", da cui prosegue la numerazione. In agenda: " +
+      ap.length + "</div>" +
       (p.since ? '<div class="meta" style="margin-top:8px">Paziente dal</div><div>' + esc(Money.formatDateIT(p.since)) + "</div>" : "") +
       (!p.cf || !Money.cfValid(p.cf) ? '<div class="warn-box" style="margin-top:12px">Il codice fiscale manca o non torna: serve per la fattura e per la detrazione.</div>' : "") +
       "</div>" +
@@ -527,6 +677,8 @@
       '<div id="cf-born">' + birthNoteHtml(p.cf) + "</div>" +
       field("Indirizzo", "p-address", p.address) +
       field("Paziente dal", "p-since", p.since, "date") +
+      field("Sedute già effettuate", "p-sedute", String(seduteBase(p)), "number") +
+      '<p class="muted">Numero di sedute precedenti a quelle segnate in agenda. Ogni appuntamento prende il numero successivo, in ordine di data.</p>' +
       '<div class="field"><label for="p-notes">Note</label><textarea id="p-notes">' + esc(p.notes) + "</textarea></div>" +
       '<button class="btn" type="button" data-action="save-patient" data-id="' + esc(p.id) + '">Salva paziente</button>' +
       (p.id ? '<button class="btn ghost" type="button" data-action="delete-patient" data-id="' + esc(p.id) + '">Elimina paziente</button>' : "");
@@ -842,10 +994,34 @@
       '<button type="button" data-action="next-month" aria-label="Mese successivo">›</button></div>' +
       '<div class="weekdays"><span>L</span><span>M</span><span>M</span><span>G</span><span>V</span><span>S</span><span>D</span></div>' +
       '<div class="days">' + cells + "</div></div>" +
+      agendaMiddle() +
       '<div class="section-title"><h2>' + esc(Money.formatDateIT(S.day)) + "</h2></div>" +
       (birthItems.length ? '<div class="list">' + birthItems.map(birthdayRow).join("") + "</div>" : "") +
       (dayItems.length ? '<div class="list">' + dayItems.map(appointmentRow).join("") + "</div>" : "") +
-      (!birthItems.length && !dayItems.length ? '<div class="empty">Nessun appuntamento in questo giorno.</div>' : "");
+      (!birthItems.length && !dayItems.length ? '<div class="empty">Nessun appuntamento in questo giorno.</div>' : "") +
+      calendarCard();
+  }
+
+  function agendaMiddle() {
+    const births = birthdaysInMonth(S.month);
+    const today = Money.todayISO();
+    const upcoming = S.appointments.filter(function (a) { return a.date >= today; })
+      .sort(function (a, b) { return (a.date + (a.time || "")).localeCompare(b.date + (b.time || "")); });
+    const birthBody = births.length
+      ? '<div class="list">' + births.map(monthBirthdayRow).join("") + "</div>"
+      : '<div class="empty">Nessun compleanno in questo mese.</div>';
+    const nextBody = upcoming.length
+      ? '<div class="list">' + upcoming.map(appointmentRow).join("") + "</div>"
+      : '<div class="empty">Nessun appuntamento in programma.</div>';
+    return foldSection("compleanni", "Compleanni del mese", births.length, birthBody) +
+      foldSection("prossimi", "Prossimi appuntamenti", upcoming.length, nextBody);
+  }
+
+  function calendarCard() {
+    return '<div class="card" style="margin-top:16px"><h2>Calendario del telefono</h2>' +
+      '<p class="muted">Invia gli appuntamenti al calendario del telefono: nel foglio di condivisione scegli Calendario. Per portare qui un calendario già esistente, esportalo come file .ics da Apple o Google e importalo. Il collegamento non resta aperto da solo: si aggiorna quando invii o importi di nuovo.</p>' +
+      '<div class="stack"><button class="btn" type="button" data-action="export-calendar">Invia al calendario del telefono</button>' +
+      '<label class="btn secondary">Importa un calendario<input class="calendar-file" type="file" accept=".ics,.ical,text/calendar" hidden></label></div></div>';
   }
 
   function viewAppointment(ap) {
@@ -855,7 +1031,8 @@
     const newQuery = "paziente=" + encodeURIComponent(ap.patientId) + "&data=" + esc(ap.date) + "&app=" + encodeURIComponent(ap.id);
     return '<a class="back" href="#/agenda">Agenda</a>' +
       '<div class="top"><div><p class="kicker">' + esc(Money.formatDateIT(ap.date)) + (ap.time ? " · " + esc(ap.time) : "") + "</p><h1>" + esc(ap.patientName) + "</h1></div></div>" +
-      '<div class="card">' + (ap.notes ? "<p>" + esc(ap.notes) + "</p>" : "<p class=\"muted\">Nessuna nota.</p>") +
+      '<div class="card"><div class="meta">Seduta</div><div>' + sessionNumber(ap) + "</div>" +
+      (ap.notes ? "<p>" + esc(ap.notes) + "</p>" : "<p class=\"muted\">Nessuna nota.</p>") +
       '<span class="badge ' + (inv ? "ok" : pf ? "pf" : "neutral") + '">' + (inv ? "Fatturato" : pf ? "Pro forma" : "Da fatturare") + "</span></div>" +
       '<div class="stack" style="margin-top:12px">' +
       (inv ? '<a class="btn" href="#/fatture/' + pathId(inv.id) + '">Apri fattura ' + inv.number + "/" + inv.year + "</a>" :
@@ -863,6 +1040,7 @@
       (pf ? '<a class="btn secondary" href="#/fatture/' + pathId(pf.id) + '">Apri pro forma ' + pf.number + "/" + pf.year + "</a>" :
         (!inv ? '<a class="btn secondary" href="#/fatture/nuova?tipo=proforma&' + newQuery + '">Crea pro forma</a>' : "")) +
       '<a class="btn secondary" href="#/agenda/nuovo?id=' + encodeURIComponent(ap.id) + '">Modifica</a>' +
+      '<button class="btn secondary" type="button" data-action="export-calendar" data-id="' + esc(ap.id) + '">Aggiungi al calendario</button>' +
       '<button class="btn ghost" type="button" data-action="delete-appointment" data-id="' + esc(ap.id) + '">Elimina</button></div>';
   }
 
@@ -1017,6 +1195,8 @@
       "<li>Con la cartella memorizzata, <strong>Pubblica su iCloud</strong> scrive lì senza riaprire File. In Safari ogni pubblicazione chiede di sostituire il file nella stessa cartella.</li>" +
       "<li>Se la fattura supera 77,47 €, apri la fattura e archivia la foto del foglio con la marca da bollo, oppure il PDF dell'assolvimento elettronico.</li>" +
       "<li>Per mandare il riepilogo: Esporta, scegli le date, poi <strong>Invia per email</strong>.</li>" +
+      "<li>In Agenda tocca <strong>Compleanni del mese</strong> e <strong>Prossimi appuntamenti</strong>. Il numero di seduta prosegue da <strong>Sedute già effettuate</strong> nella scheda paziente.</li>" +
+      "<li><strong>Invia al calendario del telefono</strong> prepara un file che Calendario può aggiungere. <strong>Importa un calendario</strong> legge un file .ics esportato da Apple o Google.</li>" +
       "</ol>" +
       "<p>I pazienti e le scansioni del bollo restano su questo dispositivo finché non li pubblichi nella cartella iCloud. Il PDF della singola fattura riporta albo, partita IVA, codice fiscale, studio, domicilio, prestazione, cassa ENPAP e bollo. Non sostituisce l'invio della fattura elettronica al Sistema di Interscambio, se è dovuto.</p>" +
       "<p>Una pro forma non è una fattura: ha una numerazione propria e non entra nel riepilogo. Quando la prestazione è assolta, aprila e tocca <strong>Converti in fattura</strong>: riceve il primo numero fiscale libero. Se un numero di fattura è sbagliato, aprila in modifica e cambialo. Il numero deve restare unico nell'anno; se la sequenza resta bucata, l'app lo segnala.</p></div>";
@@ -1112,6 +1292,8 @@
       await saveAppointment(btn.dataset.id);
     } else if (action === "delete-appointment") {
       await deleteAppointment(btn.dataset.id);
+    } else if (action === "export-calendar") {
+      await exportCalendar(btn.dataset.id || "");
     } else if (action === "save-settings") {
       await saveSettings();
     } else if (action === "logo-reset") {
@@ -1432,7 +1614,11 @@
   async function savePatient(id) {
     const name = document.getElementById("p-name").value.trim();
     if (!name) return toast("Scrivi il nome.");
-    const patient = {
+    const seduteRaw = String(document.getElementById("p-sedute").value || "").trim().replace(",", ".");
+    const sedute = seduteRaw === "" ? 0 : Number(seduteRaw);
+    if (!isFinite(sedute) || sedute < 0 || Math.floor(sedute) !== sedute) return toast("Le sedute già effettuate sono un numero intero, da zero in su.");
+    const prev = id ? patientById(id) : null;
+    const patient = Object.assign({}, prev || {}, {
       id: id || ("ID-" + Math.random().toString(16).slice(2, 10)),
       name: Money.nameUpper(name),
       phone: document.getElementById("p-phone").value.trim(),
@@ -1441,7 +1627,8 @@
       address: document.getElementById("p-address").value.trim(),
       notes: document.getElementById("p-notes").value.trim(),
       since: document.getElementById("p-since").value,
-    };
+      seduteFatte: sedute,
+    });
     if (patient.cf && !Money.cfValid(patient.cf)) toast("Codice fiscale da controllare: la scheda è salvata lo stesso.");
     await DB.put("patients", patient);
     for (const inv of S.invoices) {
@@ -1489,6 +1676,7 @@
       invoiced: document.getElementById("a-invoiced").checked || !!(prev && prev.invoiceId),
       invoiceId: prev ? prev.invoiceId || "" : "",
       proformaId: prev ? prev.proformaId || "" : "",
+      calendarUid: prev ? prev.calendarUid || "" : "",
     };
     await DB.put("appointments", ap);
     await reload();
@@ -1503,6 +1691,228 @@
     await DB.del("appointments", id);
     await reload();
     location.hash = "#/agenda";
+  }
+
+  function icsEscape(value) {
+    return String(value || "").replace(/\\/g, "\\\\").replace(/\r?\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
+  }
+
+  function icsUnescape(value) {
+    return String(value || "").replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\");
+  }
+
+  function icsStamp() {
+    return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  }
+
+  function pad2(n) {
+    return String(n).padStart(2, "0");
+  }
+
+  function icsWhen(value) {
+    const v = String(value || "").trim();
+    const m = v.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?(Z)?$/);
+    if (!m) return null;
+    if (m[7] && m[4] != null) {
+      const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]) || 0));
+      return { date: isoFromDate(d), time: pad2(d.getHours()) + ":" + pad2(d.getMinutes()) };
+    }
+    return { date: m[1] + "-" + m[2] + "-" + m[3], time: m[4] != null ? m[4] + ":" + m[5] : "" };
+  }
+
+  function plusMinutes(iso, time, minutes) {
+    const p = iso.split("-").map(Number);
+    const hm = String(time || "00:00").split(":").map(Number);
+    const d = new Date(p[0], p[1] - 1, p[2], hm[0] || 0, hm[1] || 0);
+    d.setMinutes(d.getMinutes() + minutes);
+    return { date: isoFromDate(d), time: pad2(d.getHours()) + ":" + pad2(d.getMinutes()) };
+  }
+
+  function eventUid(ap) {
+    return ap.calendarUid || (ap.id + "@fatture-sonia");
+  }
+
+  function appointmentIcs(list) {
+    const now = icsStamp();
+    const events = list.map(function (ap) {
+      const timed = !!ap.time;
+      const start = timed ? ap.date.replace(/-/g, "") + "T" + ap.time.replace(":", "") + "00" : ap.date.replace(/-/g, "");
+      let end = "";
+      if (timed) {
+        const later = plusMinutes(ap.date, ap.time, 60);
+        end = "DTEND:" + later.date.replace(/-/g, "") + "T" + later.time.replace(":", "") + "00";
+      } else {
+        end = "DTEND;VALUE=DATE:" + shiftISO(ap.date, 1).replace(/-/g, "");
+      }
+      const summary = ap.patientName + " · seduta " + sessionNumber(ap);
+      const description = ap.notes || ("Seduta " + sessionNumber(ap));
+      return "BEGIN:VEVENT\r\nUID:" + eventUid(ap) + "\r\nDTSTAMP:" + now + "\r\n" +
+        (timed ? "DTSTART:" + start : "DTSTART;VALUE=DATE:" + start) + "\r\n" + end + "\r\n" +
+        "SUMMARY:" + icsEscape(summary) + "\r\nDESCRIPTION:" + icsEscape(description) + "\r\nEND:VEVENT";
+    });
+    return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Fatture Sonia//Agenda//IT\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\n" +
+      events.join("\r\n") + "\r\nEND:VCALENDAR\r\n";
+  }
+
+  async function exportCalendar(id) {
+    const list = (id ? S.appointments.filter(function (a) { return a.id === id; }) : S.appointments)
+      .filter(function (a) { return a.date; });
+    if (!list.length) return toast(id ? "Appuntamento senza data." : "Nessun appuntamento da inviare.");
+    const blob = new Blob([appointmentIcs(list)], { type: "text/calendar" });
+    const name = id ? "appuntamento.ics" : "agenda-fatture-sonia.ics";
+    try {
+      const how = await shareOrDownload([{ blob: blob, name: name }], "Agenda degli appuntamenti");
+      toast(how === "shared" ? "Scegli Calendario per aggiungere gli appuntamenti" : "File calendario scaricato: aprilo sul telefono");
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      downloadBlob(blob, name);
+      toast("File calendario scaricato");
+    }
+  }
+
+  function expandOccurrences(start, rrule) {
+    if (!start) return [];
+    if (!rrule) return [start];
+    const rule = {};
+    String(rrule).split(";").forEach(function (part) {
+      const bits = part.split("=");
+      rule[String(bits[0] || "").toUpperCase()] = bits[1] || "";
+    });
+    const freq = rule.FREQ;
+    const interval = Math.max(1, Number(rule.INTERVAL) || 1);
+    const count = rule.COUNT ? Number(rule.COUNT) : 0;
+    const until = rule.UNTIL ? icsWhen(rule.UNTIL) : null;
+    const today = Money.todayISO();
+    const windowStart = shiftISO(today, -1500);
+    const windowEnd = until ? until.date : shiftISO(today, 500);
+    const out = [];
+    let cursor = start.date;
+    let n = 0;
+    const max = count > 0 ? Math.min(count, 300) : 300;
+    while (cursor && n < max && cursor <= windowEnd && out.length < 200) {
+      if (cursor >= windowStart) out.push({ date: cursor, time: start.time });
+      n += 1;
+      if (freq === "DAILY") cursor = shiftISO(cursor, interval);
+      else if (freq === "WEEKLY") cursor = shiftISO(cursor, 7 * interval);
+      else if (freq === "MONTHLY") cursor = addMonthsISO(cursor, interval);
+      else if (freq === "YEARLY") cursor = addMonthsISO(cursor, 12 * interval);
+      else break;
+    }
+    return out;
+  }
+
+  function parseIcsEvents(text) {
+    const src = String(text || "").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n[ \t]/g, "");
+    const blocks = src.split(/BEGIN:VEVENT/i).slice(1);
+    const events = [];
+    blocks.forEach(function (block) {
+      const body = block.split(/END:VEVENT/i)[0];
+      const fields = {};
+      const excluded = {};
+      body.split("\n").forEach(function (line) {
+        const cut = line.indexOf(":");
+        if (cut < 1) return;
+        const key = line.slice(0, cut).split(";")[0].toUpperCase();
+        const value = line.slice(cut + 1).trim();
+        if (key === "EXDATE") {
+          value.split(",").forEach(function (item) {
+            const when = icsWhen(item.trim());
+            if (when) excluded[when.date] = true;
+          });
+        } else if (fields[key] == null) fields[key] = value;
+      });
+      if (String(fields.STATUS || "").toUpperCase() === "CANCELLED") return;
+      const start = icsWhen(fields.DTSTART);
+      if (!start) return;
+      const summary = icsUnescape(fields.SUMMARY || "").trim();
+      const notes = icsUnescape(fields.DESCRIPTION || "").trim().slice(0, 400);
+      const uid = fields.UID || "";
+      expandOccurrences(start, fields.RRULE).forEach(function (when) {
+        if (excluded[when.date]) return;
+        events.push({ uid: uid, summary: summary, notes: notes, date: when.date, time: when.time });
+      });
+    });
+    return events;
+  }
+
+  function personFromSummary(summary) {
+    const head = String(summary || "").split("·")[0].replace(/\s*\(compie\s+\d+.*$/i, "").trim();
+    return Money.nameUpper(head);
+  }
+
+  function knownCalendarUid(uid) {
+    if (!uid) return false;
+    if (S.appointments.some(function (a) { return a.calendarUid === uid; })) return true;
+    if (uid.endsWith("@fatture-sonia")) {
+      const id = uid.slice(0, -"@fatture-sonia".length);
+      if (S.appointments.some(function (a) { return a.id === id; })) return true;
+    }
+    return false;
+  }
+
+  async function importCalendarFile(file) {
+    const events = parseIcsEvents(await file.text());
+    if (!events.length) return toast("Nel file non ci sono appuntamenti.");
+    let added = 0;
+    let skipped = 0;
+    let people = 0;
+    let cut = false;
+    await DB.runQuiet(async function () {
+      for (let i = 0; i < events.length; i++) {
+        if (added >= 400) { cut = true; break; }
+        const ev = events[i];
+        const name = personFromSummary(ev.summary);
+        if (name.length < 2) { skipped += 1; continue; }
+        const slotUid = ev.uid ? ev.uid + ":" + ev.date + ":" + (ev.time || "") : "";
+        if (knownCalendarUid(ev.uid) || knownCalendarUid(slotUid)) { skipped += 1; continue; }
+        let patient = S.patients.find(function (p) { return p.name === name; });
+        if (!patient) {
+          patient = {
+            id: "ID-" + Math.random().toString(16).slice(2, 10),
+            name: name,
+            phone: "",
+            email: "",
+            cf: "",
+            address: "",
+            notes: "Importato dal calendario",
+            since: ev.date,
+            seduteFatte: 0,
+          };
+          await DB.put("patients", patient);
+          S.patients.push(patient);
+          people += 1;
+        }
+        if (S.appointments.some(function (a) {
+          return a.patientId === patient.id && a.date === ev.date && (a.time || "") === (ev.time || "");
+        })) { skipped += 1; continue; }
+        const ap = {
+          id: "ap-" + Date.now().toString(36) + "-" + i.toString(36),
+          patientId: patient.id,
+          patientName: patient.name,
+          date: ev.date,
+          time: ev.time || "",
+          notes: ev.notes,
+          invoiced: false,
+          invoiceId: "",
+          proformaId: "",
+          calendarUid: slotUid || ev.uid,
+        };
+        await DB.put("appointments", ap);
+        S.appointments.push(ap);
+        added += 1;
+      }
+    });
+    if (added || people) {
+      if (window.Sync) Sync.noteLocalChange();
+      await reload();
+    }
+    let msg = added === 1 ? "Importato 1 appuntamento" : "Importati " + added + " appuntamenti";
+    if (!added && !people) msg = "Nessun appuntamento nuovo.";
+    if (people) msg += (added ? ", " : "") + (people === 1 ? "1 nuovo paziente" : people + " nuovi pazienti");
+    if (skipped) msg += " Già presenti o senza nome: " + skipped + ".";
+    if (cut) msg += " Importati i primi 400.";
+    toast(msg);
+    render();
   }
 
   function prepareLogo(file) {
@@ -1586,7 +1996,10 @@
     const name = Sync.FILE_NAME;
     try {
       const how = await shareOrDownload([{ blob: blob, name: name }], "Archivio fatture, da sostituire nella cartella già scelta");
-      toast(how === "shared" ? "In File, sostituisci archivio-fatture-sonia.json nella cartella già scelta" : "Archivio scaricato: sostituisci il file nella cartella già scelta");
+      if (how === "shared") {
+        await Sync.markSynced();
+        toast("In File, sostituisci archivio-fatture-sonia.json nella cartella già scelta");
+      } else toast("Archivio scaricato: sostituisci il file nella cartella già scelta");
     } catch (err) {
       if (err && err.name === "AbortError") return;
       downloadBlob(blob, name);
@@ -1798,6 +2211,11 @@
     }
   }
 
+  document.addEventListener("toggle", function (e) {
+    const el = e.target;
+    if (!el || !el.dataset || !el.dataset.fold) return;
+    S.folds[el.dataset.fold] = !!el.open;
+  }, true);
   document.addEventListener("click", function (e) {
     onClick(e).catch(function (err) {
       console.error(err);
@@ -1817,6 +2235,10 @@
     if (e.target.id === "p-cf") {
       const box = document.getElementById("cf-born");
       if (box) box.innerHTML = birthNoteHtml(e.target.value);
+    }
+    if (e.target.classList.contains("calendar-file") && e.target.files && e.target.files[0]) {
+      importCalendarFile(e.target.files[0]).catch(function () { toast("Calendario non importato."); });
+      e.target.value = "";
     }
     if (e.target.id === "logo-file" && e.target.files && e.target.files[0]) {
       saveLogo(e.target.files[0]).catch(function () { toast("Logo non aggiornato."); });
@@ -1849,10 +2271,103 @@
     }
   });
 
+  function setPull(px, mode) {
+    const el = document.getElementById("pull");
+    const app = document.getElementById("app");
+    const label = document.getElementById("pull-label");
+    if (!el || !app) return;
+    const n = Math.max(0, px || 0);
+    el.hidden = n <= 0;
+    el.style.height = n + "px";
+    app.style.transform = n ? "translateY(" + n + "px)" : "";
+    if (label) {
+      label.textContent = mode === "sync" ? "Sincronizzazione…" : n >= 72 ? "Rilascia per sincronizzare" : "Scorri per sincronizzare";
+    }
+  }
+
+  async function runPullSync() {
+    if (!window.Sync || Sync.state.syncing || locked()) return;
+    setPull(64, "sync");
+    try {
+      const result = await Sync.pullSync();
+      if (result === "manual") await exportBackup();
+      else if (result === "need-folder") toast("Scegli la cartella in Impostazioni: poi lo scorrimento aggiorna il file.");
+      else if (result === "busy") return;
+      else if (result === "idle") toast("Il file è già aggiornato");
+      else await finishSync(result, "File sincronizzato");
+    } catch (err) {
+      console.error(err);
+      toast("Sincronizzazione non riuscita.");
+    } finally {
+      setPull(0);
+    }
+  }
+
+  function bindPull() {
+    let startY = 0;
+    let pulling = false;
+    let dy = 0;
+    let pointerId = null;
+    function begin(y, target) {
+      if (locked() || Sync.state.syncing) return false;
+      if (target && target.closest && target.closest("#tabbar, input, textarea, select, button, label")) return false;
+      if ((document.scrollingElement || document.documentElement).scrollTop > 0) return false;
+      startY = y;
+      dy = 0;
+      pulling = true;
+      return true;
+    }
+    function move(y) {
+      if (!pulling) return;
+      const delta = y - startY;
+      if (delta <= 0 || (document.scrollingElement || document.documentElement).scrollTop > 0) {
+        dy = 0;
+        setPull(0);
+        return;
+      }
+      dy = Math.min(delta * 0.55, 120);
+      setPull(dy);
+    }
+    function end() {
+      if (!pulling) return;
+      const fire = dy >= 72;
+      pulling = false;
+      dy = 0;
+      if (fire) runPullSync();
+      else setPull(0);
+    }
+    document.addEventListener("touchstart", function (e) {
+      if (e.touches.length !== 1) return;
+      begin(e.touches[0].clientY, e.target);
+    }, { passive: true });
+    document.addEventListener("touchmove", function (e) {
+      if (!pulling || e.touches.length !== 1) return;
+      move(e.touches[0].clientY);
+      if (dy > 10 && e.cancelable) e.preventDefault();
+    }, { passive: false });
+    document.addEventListener("touchend", end);
+    document.addEventListener("touchcancel", function () { pulling = false; dy = 0; setPull(0); });
+    document.addEventListener("pointerdown", function (e) {
+      if (e.pointerType === "touch") return;
+      if (begin(e.clientY, e.target)) pointerId = e.pointerId;
+    });
+    document.addEventListener("pointermove", function (e) {
+      if (e.pointerType === "touch" || e.pointerId !== pointerId) return;
+      move(e.clientY);
+    });
+    document.addEventListener("pointerup", function (e) {
+      if (e.pointerType === "touch" || e.pointerId !== pointerId) return;
+      pointerId = null;
+      end();
+    });
+  }
+  bindPull();
+
   window.onSyncStatus = function () {
     if (!S.settings || locked()) return;
     const parts = route().parts;
     if (!parts.length || parts[0] === "altro" || parts[0] === "impostazioni") render();
+    else refreshSyncBanner();
   };
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) return;

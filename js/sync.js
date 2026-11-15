@@ -9,10 +9,11 @@
     lastSyncedAt: "",
     lastError: "",
     conflict: false,
+    pending: false,
+    syncing: false,
   };
   let handle = null;
   let generation = 0;
-  let timer = null;
   let applying = false;
   let pendingRemote = null;
 
@@ -249,14 +250,15 @@
   }
 
   async function publishNow(gen) {
+    const seen = gen != null ? gen : generation;
     const stamp = new Date().toISOString();
     await DB.runQuiet(async function () {
       await DB.setMeta("updatedAt", stamp);
     });
-    if (gen != null && gen !== generation) return stamp;
+    if (seen !== generation) return stamp;
     if (handle && await permitted(handle, false)) {
       await writeToHandle(handle, stamp);
-      if (gen != null && gen !== generation) return stamp;
+      if (seen !== generation) return stamp;
       await DB.runQuiet(async function () {
         await DB.setMeta("lastSyncedAt", stamp);
       });
@@ -266,21 +268,48 @@
       pendingRemote = null;
     }
     state.updatedAt = stamp;
+    state.pending = false;
     notify();
     return stamp;
   }
 
   function noteLocalChange() {
     if (applying) return;
-    const gen = ++generation;
-    clearTimeout(timer);
-    timer = setTimeout(function () {
-      publishNow(gen).catch(function () {
-        if (gen !== generation) return;
-        state.lastError = "Non riesco a scrivere nella cartella iCloud.";
-        notify();
-      });
-    }, 700);
+    generation += 1;
+    const stamp = new Date().toISOString();
+    state.pending = true;
+    state.updatedAt = stamp;
+    state.conflict = false;
+    notify();
+    DB.runQuiet(async function () {
+      await DB.setMeta("updatedAt", stamp);
+    }).catch(function () {});
+  }
+
+  async function markSynced() {
+    const stamp = (await DB.getMeta("updatedAt")) || new Date().toISOString();
+    await DB.runQuiet(async function () {
+      await DB.setMeta("lastSyncedAt", stamp);
+    });
+    state.lastSyncedAt = stamp;
+    state.updatedAt = stamp;
+    state.pending = false;
+    state.conflict = false;
+    notify();
+  }
+
+  async function pullSync() {
+    if (state.syncing) return "busy";
+    state.syncing = true;
+    notify();
+    try {
+      if (handle) return await reconcile(true);
+      if (state.canPick) return "need-folder";
+      return "manual";
+    } finally {
+      state.syncing = false;
+      notify();
+    }
   }
 
   async function publishSaved() {
@@ -375,6 +404,8 @@
     boot: boot,
     chooseFolder: chooseFolder,
     publishSaved: publishSaved,
+    pullSync: pullSync,
+    markSynced: markSynced,
     authorize: authorize,
     disconnect: disconnect,
     reconcile: reconcile,
